@@ -49,6 +49,7 @@
 	export let chat;
 	export let history;
 	export let selectedModels;
+	export let mwsAutoRoutingHint = null;
 	export let showModelSelector = true;
 
 	export let onSaveTempChat: () => {};
@@ -112,7 +113,7 @@
 			"
 				>
 					{#if showModelSelector}
-						<ModelSelector bind:selectedModels showSetDefault={!shareEnabled} />
+						<ModelSelector bind:selectedModels mwsAutoRoutingHint={mwsAutoRoutingHint} showSetDefault={!shareEnabled} />
 					{/if}
 				</div>
 

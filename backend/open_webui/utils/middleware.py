@@ -26,6 +26,7 @@ from starlette.responses import Response, StreamingResponse, JSONResponse
 
 
 from open_webui.utils.misc import is_string_allowed
+from open_webui.utils.mws_gpt.registry import extract_last_user_text
 from open_webui.models.oauth_sessions import OAuthSessions
 from open_webui.models.chats import Chats
 from open_webui.models.folders import Folders
@@ -51,6 +52,7 @@ from open_webui.routers.images import (
     CreateImageForm,
     image_edits,
     EditImageForm,
+    set_image_model,
 )
 from open_webui.routers.pipelines import (
     process_pipeline_inlet_filter,
@@ -1567,6 +1569,20 @@ async def chat_web_search_handler(request: Request, form_data: dict, extra_param
                 }
             )
 
+    except HTTPException as e:
+        log.warning('web_search HTTP: %s', getattr(e, 'detail', e))
+        await event_emitter(
+            {
+                'type': 'status',
+                'data': {
+                    'action': 'web_search',
+                    'description': 'Web araması sonuç vermedi; yanıt yine de üretilecek.',
+                    'queries': queries,
+                    'done': True,
+                    'error': False,
+                },
+            }
+        )
     except Exception as e:
         log.exception(e)
         await event_emitter(
@@ -1574,10 +1590,10 @@ async def chat_web_search_handler(request: Request, form_data: dict, extra_param
                 'type': 'status',
                 'data': {
                     'action': 'web_search',
-                    'description': 'An error occurred while searching the web',
+                    'description': 'Web araması atlandı (motor/anahtar kontrolü veya ağ). Sohbet devam ediyor.',
                     'queries': queries,
                     'done': True,
-                    'error': True,
+                    'error': False,
                 },
             }
         )
@@ -1683,6 +1699,14 @@ async def chat_image_generation_handler(request: Request, form_data: dict, extra
     if not chat_id or not isinstance(chat_id, str) or not __event_emitter__:
         return form_data
 
+    def _pure_image_model(mid: str) -> bool:
+        try:
+            from open_webui.utils.mws_gpt.team_registry import get_primary_capability
+
+            return get_primary_capability(mid or '') == 'image_generation'
+        except Exception:
+            return False
+
     if chat_id.startswith('local:'):
         message_list = form_data.get('messages', [])
     else:
@@ -1698,7 +1722,13 @@ async def chat_image_generation_handler(request: Request, form_data: dict, extra
         message_id = chat.chat.get('history', {}).get('currentId')
         message_list = get_message_list(messages_map, message_id)
 
-    user_message = get_last_user_message(message_list)
+    # İstek gövdesindeki son kullanıcı metni (DB geçmişinden daha güncel olabilir)
+    fd_user = extract_last_user_text(form_data.get('messages') or [])
+    user_message = (fd_user if (fd_user and fd_user.strip()) else None) or get_last_user_message(
+        message_list
+    )
+    if user_message is None:
+        user_message = ''
 
     prompt = user_message
     message_images = get_images_from_messages(message_list)
@@ -1749,7 +1779,10 @@ async def chat_image_generation_handler(request: Request, form_data: dict, extra
                 }
             )
 
-            system_message_content = '<context>The requested image has been edited and created and is now being shown to the user. Let them know that it has been generated.</context>'
+            system_message_content = (
+                '<context>The image has been edited and is shown above. Reply briefly in the same '
+                'natural language as the user\'s last message; do not mix languages or include random code.</context>'
+            )
         except Exception as e:
             log.debug(e)
 
@@ -1770,11 +1803,21 @@ async def chat_image_generation_handler(request: Request, form_data: dict, extra
                 }
             )
 
-            system_message_content = f'<context>Image generation was attempted but failed. The system is currently unable to generate the image. Tell the user that the following error occurred: {error_message}</context>'
+            system_message_content = (
+                '<context>Image edit failed. Explain briefly in the same natural language as the user\'s '
+                f'last message. Error detail: {error_message}</context>'
+            )
 
     else:
-        # Create image(s)
-        if request.app.state.config.ENABLE_IMAGE_PROMPT_GENERATION:
+        # Create image(s) — gerçek görsel model id (pipeline metin modeline geçmiş olabilir)
+        mid_sel = (form_data.get('_mws_image_generation_model_id') or form_data.get('model') or '').strip()
+        # MWS: metin modeli + qwen-image saklandıysa LLM ile prompt genişletme yapma — yanlış nesne/çöp prompt üretir
+        use_raw_prompt = (
+            _pure_image_model(mid_sel)
+            or bool(form_data.get('_mws_image_pipeline'))
+            or bool(form_data.get('_mws_image_generation_model_id'))
+        )
+        if request.app.state.config.ENABLE_IMAGE_PROMPT_GENERATION and not use_raw_prompt:
             try:
                 res = await generate_image_prompt(
                     request,
@@ -1806,6 +1849,12 @@ async def chat_image_generation_handler(request: Request, form_data: dict, extra
                 prompt = user_message
 
         try:
+            if mid_sel:
+                try:
+                    set_image_model(request, mid_sel)
+                except Exception as e:
+                    log.warning('set_image_model(%s): %s', mid_sel, e)
+
             images = await image_generations(
                 request=request,
                 form_data=CreateImageForm(**{'prompt': prompt}),
@@ -1838,7 +1887,11 @@ async def chat_image_generation_handler(request: Request, form_data: dict, extra
                 }
             )
 
-            system_message_content = '<context>The requested image has been created by the system successfully and is now being shown to the user. Let the user know that the image they requested has been generated and is now shown in the chat.</context>'
+            system_message_content = (
+                '<context>The image is displayed above. Reply briefly in the same natural language as the user\'s '
+                'last message (match Turkish, English, etc.). Do not mix languages, do not output code fragments '
+                'or token soup.</context>'
+            )
         except Exception as e:
             log.debug(e)
 
@@ -1859,10 +1912,26 @@ async def chat_image_generation_handler(request: Request, form_data: dict, extra
                 }
             )
 
-            system_message_content = f'<context>Image generation was attempted but failed because of an error. The system is currently unable to generate the image. Tell the user that the following error occurred: {error_message}</context>'
+            system_message_content = (
+                '<context>Image generation failed. Explain briefly in the same natural language as the user\'s '
+                f'last message. Error: {error_message}</context>'
+            )
 
     if system_message_content:
         form_data['messages'] = add_or_update_system_message(system_message_content, form_data['messages'])
+
+    # Görsel modeli chat/completions ile çağırmak MWS'de 404 verir; takip yanıtı için metin modeline geç.
+    try:
+        from open_webui.utils.mws_gpt.team_registry import get_primary_capability, pick_text_model_for_chat_followup
+
+        cur = (form_data.get('model') or '').strip()
+        if get_primary_capability(cur) == 'image_generation':
+            rep = pick_text_model_for_chat_followup(request)
+            if rep:
+                log.info('[MWS] post-image flow: chat model %s -> %s', cur, rep)
+                form_data['model'] = rep
+    except Exception as e:
+        log.warning('[MWS] post-image text model swap failed: %s', e)
 
     return form_data
 
@@ -2143,6 +2212,22 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     form_data = apply_params_to_form_data(form_data, model)
     log.debug(f'form_data: {form_data}')
 
+    # MWS: saf görsel modeli web araması / sorgu üretiminde kullanma (404). Geçici metin modeli + gerçek görsel id sakla.
+    try:
+        from open_webui.utils.mws_gpt.team_registry import get_primary_capability, pick_text_model_for_chat_followup
+
+        mid_ch = (model.get('id') or form_data.get('model') or '').strip()
+        if get_primary_capability(mid_ch) == 'image_generation':
+            rep = pick_text_model_for_chat_followup(request)
+            if rep:
+                form_data['_mws_image_generation_model_id'] = mid_ch
+                form_data['_mws_image_pipeline'] = True
+                form_data['model'] = rep
+                model = request.app.state.MODELS.get(rep) or model
+                log.info('[MWS] pipeline uses text model %s for side-effects; image id=%s', rep, mid_ch)
+    except Exception as e:
+        log.debug('[MWS] image model swap at pipeline start: %s', e)
+
     # Load messages from DB when available — DB preserves structured 'output' items
     # which the frontend strips, causing tool calls to be merged into content.
     chat_id = metadata.get('chat_id')
@@ -2319,6 +2404,40 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         raise Exception(f'{e}')
 
     features = form_data.pop('features', None) or {}
+    try:
+        import os
+
+        from open_webui.utils.mws_gpt.active import is_mws_gpt_active
+        from open_webui.utils.mws_gpt.registry import (
+            collect_attachment_kinds,
+            extract_last_user_text,
+            should_inject_web_search_for_message,
+        )
+        from open_webui.utils.mws_gpt.team_registry import get_primary_capability
+
+        mid = (model.get('id') or form_data.get('model') or '').strip()
+        if form_data.get('_mws_image_pipeline') or (
+            mid and get_primary_capability(mid) == 'image_generation'
+        ):
+            features['image_generation'] = True
+        _last_user = extract_last_user_text(form_data.get('messages') or [])
+        _att = collect_attachment_kinds(form_data.get('files'), form_data.get('messages'))
+        _input_mode = form_data.get('input_mode') or (
+            (metadata.get('params') or {}).get('input_mode')
+        )
+        if (
+            is_mws_gpt_active(request.app.state.config)
+            and os.environ.get('MWS_INJECT_WEB_SEARCH_FEATURE', 'true').lower() == 'true'
+            and getattr(request.app.state.config, 'ENABLE_WEB_SEARCH', False)
+            and should_inject_web_search_for_message(
+                message_text=_last_user,
+                attachments=_att,
+                input_mode=_input_mode,
+            )
+        ):
+            features['web_search'] = True
+    except Exception:
+        pass
     extra_params['__features__'] = features
     if features:
         if 'voice' in features and features['voice']:
@@ -2338,15 +2457,15 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             if metadata.get('params', {}).get('function_calling') != 'native':
                 form_data = await chat_memory_handler(request, form_data, extra_params, user)
 
-        if 'web_search' in features and features['web_search']:
-            # Skip forced RAG web search when native FC is enabled - model can use web_search tool
-            if metadata.get('params', {}).get('function_calling') != 'native':
-                form_data = await chat_web_search_handler(request, form_data, extra_params, user)
-
         if 'image_generation' in features and features['image_generation']:
             # Skip forced image generation when native FC is enabled - model can use generate_image tool
             if metadata.get('params', {}).get('function_calling') != 'native':
                 form_data = await chat_image_generation_handler(request, form_data, extra_params, user)
+
+        if 'web_search' in features and features['web_search']:
+            # Skip forced RAG web search when native FC is enabled - model can use web_search tool
+            if metadata.get('params', {}).get('function_calling') != 'native':
+                form_data = await chat_web_search_handler(request, form_data, extra_params, user)
 
         if 'code_interpreter' in features and features['code_interpreter']:
             engine = getattr(request.app.state.config, 'CODE_INTERPRETER_ENGINE', 'pyodide')
@@ -2694,6 +2813,32 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     # Check if file context extraction is enabled for this model (default True)
     file_context_enabled = (model.get('info', {}).get('meta', {}).get('capabilities') or {}).get('file_context', True)
 
+    # If the user sent only an audio file (no typed text), resolve the transcript
+    # of the MOST RECENT audio attachment and set it as the user message BEFORE
+    # the RAG pipeline runs. This ensures generate_queries and vector search
+    # both use the correct question from the current audio, not previous ones.
+    if not prompt and files:
+        from open_webui.models.files import Files as _FilesModel
+        for _af in reversed(files):  # reversed → most recent audio first
+            _ct = (_af.get('content_type') or '').lower()
+            _name = (_af.get('name') or '').lower()
+            _is_audio = _ct.startswith('audio/') or any(
+                _name.endswith(ext) for ext in ('.ogg', '.mp3', '.wav', '.webm', '.m4a', '.flac')
+            )
+            if not _is_audio:
+                continue
+            _fid = _af.get('id')
+            if not _fid:
+                continue
+            _fobj = _FilesModel.get_file_by_id(_fid)
+            if _fobj and (_fobj.data or {}).get('content', '').strip():
+                _transcript = _fobj.data['content'].strip()
+                form_data['messages'] = set_last_user_message_content(
+                    _transcript, form_data['messages']
+                )
+                prompt = _transcript
+                break
+
     if file_context_enabled:
         try:
             form_data, flags = await chat_completion_files_handler(request, form_data, extra_params, user)
@@ -2739,6 +2884,14 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     # Strip empty text content blocks from multimodal messages
     # to prevent errors from providers like Gemini and Claude
     form_data['messages'] = strip_empty_content_blocks(form_data.get('messages', []))
+
+    # MTS yarışması: global kurallar (env ile açılır), diğer tüm sistem mesajlarından önce
+    try:
+        from open_webui.utils.mts_competition_system_prompt import maybe_prepend_mts_system_message
+
+        form_data['messages'] = maybe_prepend_mts_system_message(form_data.get('messages', []))
+    except Exception:
+        pass
 
     # Merge any duplicate system messages into a single message at position 0
     # to prevent template parsing errors with strict chat templates (e.g. Qwen)
@@ -3058,6 +3211,18 @@ async def non_streaming_chat_response_handler(response, ctx):
 
     if event_emitter:
         try:
+            mws_meta = metadata.get('mws_routing')
+            if mws_meta:
+                await event_emitter(
+                    {
+                        'type': 'chat:completion',
+                        'data': {
+                            'mws_resolved_model_id': mws_meta.get('resolved_model_id'),
+                            'mws_routing_reason': mws_meta.get('reason'),
+                        },
+                    }
+                )
+
             if 'error' in response_data:
                 error = response_data.get('error')
 
@@ -4039,6 +4204,18 @@ async def streaming_chat_response_handler(response, ctx):
 
                     if response.background:
                         await response.background()
+
+                mws_meta = metadata.get('mws_routing')
+                if mws_meta and event_emitter:
+                    await event_emitter(
+                        {
+                            'type': 'chat:completion',
+                            'data': {
+                                'mws_resolved_model_id': mws_meta.get('resolved_model_id'),
+                                'mws_routing_reason': mws_meta.get('reason'),
+                            },
+                        }
+                    )
 
                 await stream_body_handler(response, form_data)
 

@@ -1087,6 +1087,76 @@ OPENAI_API_CONFIGS = PersistentConfig(
     {},
 )
 
+####################################
+# MWS GPT (OpenAI-compatible)
+####################################
+
+MWS_GPT_ENABLED = PersistentConfig(
+    'MWS_GPT_ENABLED',
+    'mws_gpt.enabled',
+    os.environ.get('MWS_GPT_ENABLED', 'False').lower() == 'true',
+)
+
+MWS_GPT_API_BASE_URL = PersistentConfig(
+    'MWS_GPT_API_BASE_URL',
+    'mws_gpt.api_base_url',
+    os.environ.get('MWS_GPT_API_BASE_URL', '').strip().rstrip('/'),
+)
+
+MWS_GPT_API_KEY = PersistentConfig(
+    'MWS_GPT_API_KEY',
+    'mws_gpt.api_key',
+    os.environ.get('MWS_GPT_API_KEY', ''),
+)
+
+MWS_GPT_DEFAULT_TEXT_MODEL = PersistentConfig(
+    'MWS_GPT_DEFAULT_TEXT_MODEL',
+    'mws_gpt.default_text_model',
+    os.environ.get('MWS_GPT_DEFAULT_TEXT_MODEL', ''),
+)
+
+MWS_GPT_DEFAULT_CODE_MODEL = PersistentConfig(
+    'MWS_GPT_DEFAULT_CODE_MODEL',
+    'mws_gpt.default_code_model',
+    os.environ.get('MWS_GPT_DEFAULT_CODE_MODEL', ''),
+)
+
+MWS_GPT_DEFAULT_VISION_MODEL = PersistentConfig(
+    'MWS_GPT_DEFAULT_VISION_MODEL',
+    'mws_gpt.default_vision_model',
+    os.environ.get('MWS_GPT_DEFAULT_VISION_MODEL', ''),
+)
+
+MWS_GPT_DEFAULT_IMAGE_MODEL = PersistentConfig(
+    'MWS_GPT_DEFAULT_IMAGE_MODEL',
+    'mws_gpt.default_image_model',
+    os.environ.get('MWS_GPT_DEFAULT_IMAGE_MODEL', ''),
+)
+
+MWS_GPT_DEFAULT_AUDIO_MODEL = PersistentConfig(
+    'MWS_GPT_DEFAULT_AUDIO_MODEL',
+    'mws_gpt.default_audio_model',
+    os.environ.get('MWS_GPT_DEFAULT_AUDIO_MODEL', ''),
+)
+
+MWS_GPT_DEFAULT_EMBEDDING_MODEL = PersistentConfig(
+    'MWS_GPT_DEFAULT_EMBEDDING_MODEL',
+    'mws_gpt.default_embedding_model',
+    os.environ.get('MWS_GPT_DEFAULT_EMBEDDING_MODEL', ''),
+)
+
+MWS_GPT_AUTO_ROUTING = PersistentConfig(
+    'MWS_GPT_AUTO_ROUTING',
+    'mws_gpt.auto_routing',
+    os.environ.get('MWS_GPT_AUTO_ROUTING', 'True').lower() == 'true',
+)
+
+MWS_GPT_TAG = PersistentConfig(
+    'MWS_GPT_TAG',
+    'mws_gpt.connection_tag',
+    os.environ.get('MWS_GPT_TAG', 'mws'),
+)
+
 # Get the actual OpenAI API key based on the base URL
 OPENAI_API_KEY = ''
 try:
