@@ -3058,6 +3058,18 @@ async def non_streaming_chat_response_handler(response, ctx):
 
     if event_emitter:
         try:
+            mws_meta = metadata.get('mws_routing')
+            if mws_meta:
+                await event_emitter(
+                    {
+                        'type': 'chat:completion',
+                        'data': {
+                            'mws_resolved_model_id': mws_meta.get('resolved_model_id'),
+                            'mws_routing_reason': mws_meta.get('reason'),
+                        },
+                    }
+                )
+
             if 'error' in response_data:
                 error = response_data.get('error')
 
@@ -4039,6 +4051,18 @@ async def streaming_chat_response_handler(response, ctx):
 
                     if response.background:
                         await response.background()
+
+                mws_meta = metadata.get('mws_routing')
+                if mws_meta and event_emitter:
+                    await event_emitter(
+                        {
+                            'type': 'chat:completion',
+                            'data': {
+                                'mws_resolved_model_id': mws_meta.get('resolved_model_id'),
+                                'mws_routing_reason': mws_meta.get('reason'),
+                            },
+                        }
+                    )
 
                 await stream_body_handler(response, form_data)
 

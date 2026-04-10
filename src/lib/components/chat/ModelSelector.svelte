@@ -9,9 +9,31 @@
 	const i18n = getContext('i18n');
 
 	export let selectedModels = [''];
+	export let mwsAutoRoutingHint: string | null = null;
 	export let disabled = false;
 
 	export let showSetDefault = true;
+
+	const capabilityLabel = (model: Record<string, unknown>) => {
+		const caps = model?.info?.meta?.mws_capabilities;
+		if (Array.isArray(caps) && caps.length) return String(caps[0]);
+		const id = String(model?.id ?? '').toLowerCase();
+		if (id.includes('whisper') || id.includes('audio')) return 'Audio';
+		if (id.includes('vision') || id.includes('llava')) return 'Vision';
+		if (id.includes('embed')) return 'Embedding';
+		if (id.includes('dall') || id.includes('image')) return 'Image';
+		if (id.includes('code') || id.includes('coder')) return 'Code';
+		return 'Text';
+	};
+
+	const isMwsTagged = (model: Record<string, unknown>) => {
+		if (model?.id === 'mws:auto') return true;
+		const tags = model?.tags;
+		if (!Array.isArray(tags)) return false;
+		return tags.some((t: unknown) =>
+			typeof t === 'object' && t && 'name' in t ? (t as { name?: string }).name === 'mws' : t === 'mws'
+		);
+	};
 
 	const saveDefaultModel = async () => {
 		const hasEmptyModel = selectedModels.filter((it) => it === '');
@@ -59,7 +81,12 @@
 						placeholder={$i18n.t('Select a model')}
 						items={$models.map((model) => ({
 							value: model.id,
-							label: model.name,
+							label:
+								model.id === 'mws:auto'
+									? `${model.name} (Auto)`
+									: isMwsTagged(model)
+										? `${model.name} · ${capabilityLabel(model)}`
+										: model.name,
 							model: model
 						}))}
 						{pinModelHandler}
@@ -125,6 +152,14 @@
 			{/if}
 		</div>
 	{/each}
+	{#if mwsAutoRoutingHint}
+		<div
+			class="text-[0.7rem] text-gray-500 dark:text-gray-400 mt-0.5 ml-0.5 max-w-[min(100%,24rem)] truncate"
+			title={mwsAutoRoutingHint}
+		>
+			{mwsAutoRoutingHint}
+		</div>
+	{/if}
 </div>
 
 {#if showSetDefault}

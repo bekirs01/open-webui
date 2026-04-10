@@ -366,9 +366,22 @@ async def get_all_models(request, refresh: bool = False, user: UserModel = None)
             if getattr(function_module, 'toggle', None):
                 model['filters'].extend(get_filter_items_from_module(filter_function, function_module))
 
+    try:
+        from open_webui.utils.mws_gpt.fallback_models import inject_mws_fallback_models, sync_openai_models_cache
+
+        inject_mws_fallback_models(request, models)
+    except Exception as e:
+        log.warning('MWS GPT: inject_mws_fallback_models skipped: %s', e)
+
     log.debug(f'get_all_models() returned {len(models)} models')
 
     models_dict = {model['id']: model for model in models}
+    try:
+        from open_webui.utils.mws_gpt.fallback_models import sync_openai_models_cache
+
+        sync_openai_models_cache(request, models_dict)
+    except Exception as e:
+        log.warning('MWS GPT: sync_openai_models_cache skipped: %s', e)
     if isinstance(request.app.state.MODELS, RedisDict):
         request.app.state.MODELS.set(models_dict)
     else:
@@ -442,6 +455,10 @@ def get_filtered_models(models, user, db=None):
                     user_group_ids=user_group_ids,
                 ):
                     filtered_models.append(model)
+                continue
+
+            if model.get('mws_public'):
+                filtered_models.append(model)
                 continue
 
             model_info = model_infos.get(model['id'])

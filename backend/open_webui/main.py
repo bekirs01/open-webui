@@ -58,6 +58,7 @@ from starsessions import (
 from starsessions.stores.redis import RedisStore
 
 from open_webui.utils import logger
+from open_webui.utils.mws_gpt.active import is_mws_gpt_active
 from open_webui.utils.audit import AuditLevel, AuditLoggingMiddleware
 from open_webui.utils.logger import start_logger
 from open_webui.socket.main import (
@@ -125,6 +126,17 @@ from open_webui.config import (
     OPENAI_API_BASE_URLS,
     OPENAI_API_KEYS,
     OPENAI_API_CONFIGS,
+    MWS_GPT_ENABLED,
+    MWS_GPT_API_BASE_URL,
+    MWS_GPT_API_KEY,
+    MWS_GPT_DEFAULT_TEXT_MODEL,
+    MWS_GPT_DEFAULT_CODE_MODEL,
+    MWS_GPT_DEFAULT_VISION_MODEL,
+    MWS_GPT_DEFAULT_IMAGE_MODEL,
+    MWS_GPT_DEFAULT_AUDIO_MODEL,
+    MWS_GPT_DEFAULT_EMBEDDING_MODEL,
+    MWS_GPT_AUTO_ROUTING,
+    MWS_GPT_TAG,
     # Direct Connections
     ENABLE_DIRECT_CONNECTIONS,
     # Model list
@@ -617,6 +629,10 @@ async def lifespan(app: FastAPI):
     if RESET_CONFIG_ON_START:
         reset_config()
 
+    from open_webui.utils.mws_gpt import merge_mws_gpt_openai_connection
+
+    merge_mws_gpt_openai_connection(app)
+
     if LICENSE_KEY:
         get_license_data(app, LICENSE_KEY)
 
@@ -775,6 +791,18 @@ app.state.config.ENABLE_OPENAI_API = ENABLE_OPENAI_API
 app.state.config.OPENAI_API_BASE_URLS = OPENAI_API_BASE_URLS
 app.state.config.OPENAI_API_KEYS = OPENAI_API_KEYS
 app.state.config.OPENAI_API_CONFIGS = OPENAI_API_CONFIGS
+
+app.state.config.MWS_GPT_ENABLED = MWS_GPT_ENABLED
+app.state.config.MWS_GPT_API_BASE_URL = MWS_GPT_API_BASE_URL
+app.state.config.MWS_GPT_API_KEY = MWS_GPT_API_KEY
+app.state.config.MWS_GPT_DEFAULT_TEXT_MODEL = MWS_GPT_DEFAULT_TEXT_MODEL
+app.state.config.MWS_GPT_DEFAULT_CODE_MODEL = MWS_GPT_DEFAULT_CODE_MODEL
+app.state.config.MWS_GPT_DEFAULT_VISION_MODEL = MWS_GPT_DEFAULT_VISION_MODEL
+app.state.config.MWS_GPT_DEFAULT_IMAGE_MODEL = MWS_GPT_DEFAULT_IMAGE_MODEL
+app.state.config.MWS_GPT_DEFAULT_AUDIO_MODEL = MWS_GPT_DEFAULT_AUDIO_MODEL
+app.state.config.MWS_GPT_DEFAULT_EMBEDDING_MODEL = MWS_GPT_DEFAULT_EMBEDDING_MODEL
+app.state.config.MWS_GPT_AUTO_ROUTING = MWS_GPT_AUTO_ROUTING
+app.state.config.MWS_GPT_TAG = MWS_GPT_TAG
 
 app.state.OPENAI_MODELS = {}
 
@@ -1590,6 +1618,30 @@ async def get_models(request: Request, refresh: bool = False, user=Depends(get_v
 
     models = get_filtered_models(models, user)
 
+    if is_mws_gpt_active(request.app.state.config):
+        from open_webui.utils.mws_gpt import MWS_AUTO_ID
+
+        if not any(m.get('id') == MWS_AUTO_ID for m in models):
+            models.insert(
+                0,
+                {
+                    'id': MWS_AUTO_ID,
+                    'name': 'MWS Auto',
+                    'object': 'model',
+                    'created': int(time.time()),
+                    'owned_by': 'openai',
+                    'openai': {'id': MWS_AUTO_ID},
+                    'connection_type': 'external',
+                    'tags': [{'name': 'mws'}, {'name': 'auto'}],
+                    'info': {
+                        'meta': {
+                            'description': 'Pick the best MWS GPT model for each message (text, code, vision, …).',
+                            'mws_auto': True,
+                        },
+                    },
+                },
+            )
+
     log.debug(
         f'/api/models returned filtered models accessible to the user: {json.dumps([model.get("id") for model in models])}'
     )
@@ -1641,6 +1693,24 @@ async def chat_completion(
 ):
     if not request.app.state.MODELS:
         await get_all_models(request, user=user)
+
+    from open_webui.utils.mws_gpt import MWS_AUTO_ID, resolve_mws_chat_model
+
+    if form_data.get('model') == MWS_AUTO_ID and not is_mws_gpt_active(request.app.state.config):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='MWS GPT is disabled (set MWS_GPT_API_BASE_URL and MWS_GPT_API_KEY, or MWS_GPT_ENABLED=true).',
+        )
+
+    request.state.mws_routing = None
+    try:
+        if is_mws_gpt_active(request.app.state.config) and form_data.get('model') == MWS_AUTO_ID:
+            resolved_id, routing_meta = resolve_mws_chat_model(request, form_data)
+            if resolved_id:
+                form_data['model'] = resolved_id
+            request.state.mws_routing = routing_meta
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
     model_id = form_data.get('model', None)
     model_item = form_data.pop('model_item', {})
@@ -1722,6 +1792,7 @@ async def chat_completion(
             'variables': form_data.get('variables', {}),
             'model': model,
             'direct': model_item.get('direct', False),
+            'mws_routing': getattr(request.state, 'mws_routing', None),
             'params': {
                 'stream_delta_chunk_size': stream_delta_chunk_size,
                 'reasoning_tags': reasoning_tags,

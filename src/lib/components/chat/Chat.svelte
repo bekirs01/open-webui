@@ -142,6 +142,25 @@
 		selectedModelIds = selectedModels;
 	}
 
+	$: mwsAutoRoutingHint =
+		selectedModels[0] === 'mws:auto' && history?.currentId
+			? (() => {
+					let cur = history.currentId;
+					let steps = 0;
+					while (cur && steps++ < 200) {
+						const msg = history.messages[cur];
+						if (msg?.role === 'assistant' && msg.mwsResolvedModelId) {
+							const label =
+								$models.find((x) => x.id === msg.mwsResolvedModelId)?.name ??
+								msg.mwsResolvedModelId;
+							return `Auto → ${label}`;
+						}
+						cur = msg?.parentId ?? null;
+					}
+					return null;
+				})()
+			: null;
+
 	let selectedToolIds = [];
 	let selectedFilterIds = [];
 	let pendingOAuthTools = [];
@@ -1586,7 +1605,19 @@
 	};
 
 	const chatCompletionEventHandler = async (data, message, chatId) => {
-		const { id, done, choices, content, output, sources, selected_model_id, error, usage } = data;
+		const {
+			id,
+			done,
+			choices,
+			content,
+			output,
+			sources,
+			selected_model_id,
+			mws_resolved_model_id,
+			mws_routing_reason,
+			error,
+			usage
+		} = data;
 
 		// Store raw OR-aligned output items from backend
 		if (output) {
@@ -1682,6 +1713,11 @@
 		if (selected_model_id) {
 			message.selectedModelId = selected_model_id;
 			message.arena = true;
+		}
+
+		if (mws_resolved_model_id) {
+			message.mwsResolvedModelId = mws_resolved_model_id;
+			message.mwsRoutingReason = mws_routing_reason;
 		}
 
 		if (usage) {
@@ -2758,6 +2794,7 @@
 						{history}
 						title={$chatTitle}
 						bind:selectedModels
+						mwsAutoRoutingHint={mwsAutoRoutingHint}
 						shareEnabled={!!history.currentId}
 						{initNewChat}
 						{archiveChatHandler}
