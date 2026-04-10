@@ -12,6 +12,7 @@
 	dayjs.extend(relativeTime);
 
 	import { onMount, tick, getContext, createEventDispatcher } from 'svelte';
+	import { get } from 'svelte/store';
 
 	import { createPicker, getAuthToken } from '$lib/utils/google-drive-picker';
 	import { pickAndDownloadFile } from '$lib/utils/onedrive-file-picker';
@@ -54,6 +55,14 @@
 	} from '$lib/utils';
 	import { uploadFile } from '$lib/apis/files';
 	import { generateAutoCompletion } from '$lib/apis';
+	import { chatCompletion } from '$lib/apis/openai';
+	import {
+		pickPromptImproveModel,
+		PROMPT_IMPROVE_SYSTEM,
+		normalizePromptForCompare,
+		stripPromptImproveArtifacts,
+		enforceDraftScriptLanguage
+	} from '$lib/utils/prompt-improve';
 	import { deleteFileById } from '$lib/apis/files';
 	import { getChatById } from '$lib/apis/chats';
 	import { getSessionUser } from '$lib/apis/auths';
@@ -401,6 +410,149 @@
 		}
 	};
 
+	const startPromptImproveCooldown = () => {
+		promptImproveCooldownActive = true;
+		setTimeout(() => {
+			promptImproveCooldownActive = false;
+		}, PROMPT_IMPROVE_COOLDOWN_MS);
+	};
+
+	const runPromptImprove = async () => {
+		const modelId = pickPromptImproveModel(get(models), selectedModelIds);
+		if (!modelId) {
+			toast.error($i18n.t('No models available'));
+			return;
+		}
+		if (promptImproveCooldownActive) {
+			toast.info($i18n.t('Please wait before improving the prompt again.'));
+			return;
+		}
+		const draft = prompt.trim();
+		if (!draft) {
+			toast.error($i18n.t('Empty message'));
+			return;
+		}
+
+		promptImproveBackup = draft;
+		promptImprovePhase = 'streaming';
+		promptImproveAbort = new AbortController();
+
+		let accumulated = '';
+
+		const [res] = await chatCompletion(
+			localStorage.token,
+			{
+				model: modelId,
+				model_item: get(models).find((m) => m.id === modelId),
+				stream: true,
+				temperature: 0.55,
+				max_tokens: 2048,
+				messages: [
+					{ role: 'system', content: PROMPT_IMPROVE_SYSTEM },
+					{ role: 'user', content: draft }
+				]
+			},
+			`${WEBUI_BASE_URL}/api`,
+			promptImproveAbort.signal
+		).catch(() => [null]);
+
+		if (!res?.ok) {
+			toast.error($i18n.t('Error'));
+			promptImprovePhase = 'idle';
+			startPromptImproveCooldown();
+			promptImproveAbort = null;
+			return;
+		}
+
+		const reader = res.body?.getReader();
+		if (!reader) {
+			toast.error($i18n.t('Error'));
+			promptImprovePhase = 'idle';
+			startPromptImproveCooldown();
+			promptImproveAbort = null;
+			return;
+		}
+
+		const decoder = new TextDecoder();
+
+		try {
+			while (true) {
+				const { done, value } = await reader.read();
+				if (done) break;
+				const chunk = decoder.decode(value, { stream: true });
+				const lines = chunk.split('\n').filter((line) => line.trim() !== '');
+				for (const line of lines) {
+					if (!line.startsWith('data: ')) continue;
+					if (line.includes('[DONE]')) continue;
+					try {
+						const data = JSON.parse(line.slice(6));
+						const delta = data.choices?.[0]?.delta?.content;
+						if (delta) {
+							accumulated += delta;
+						}
+					} catch {
+						// ignore malformed SSE lines
+					}
+				}
+			}
+		} catch (e) {
+			const err = e as Error;
+			if (err?.name === 'AbortError' || promptImproveAbort?.signal.aborted) {
+				chatInputElement?.setText(promptImproveBackup);
+				prompt = promptImproveBackup;
+			}
+			promptImprovePhase = 'idle';
+			promptImproveAbort = null;
+			startPromptImproveCooldown();
+			return;
+		}
+
+		promptImproveAbort = null;
+
+		accumulated = stripPromptImproveArtifacts(accumulated);
+		accumulated = enforceDraftScriptLanguage(promptImproveBackup, accumulated);
+
+		if (!accumulated.trim()) {
+			toast.error($i18n.t('Error'));
+			chatInputElement?.setText(promptImproveBackup);
+			prompt = promptImproveBackup;
+			promptImprovePhase = 'idle';
+			startPromptImproveCooldown();
+			return;
+		}
+
+		if (normalizePromptForCompare(accumulated, promptImproveBackup)) {
+			toast.info($i18n.t('The model returned the same text.'));
+			chatInputElement?.setText(promptImproveBackup);
+			prompt = promptImproveBackup;
+			promptImprovePhase = 'idle';
+			startPromptImproveCooldown();
+			return;
+		}
+
+		chatInputElement?.setText(accumulated);
+		prompt = accumulated;
+		promptImprovePhase = 'preview';
+	};
+
+	const acceptPromptImprove = async () => {
+		promptImproveAcceptBaseline = prompt.trim();
+		promptImprovePhase = 'idle';
+		startPromptImproveCooldown();
+		await tick();
+		document.getElementById('chat-input')?.focus();
+	};
+
+	const cancelPromptImprove = async () => {
+		chatInputElement?.setText(promptImproveBackup);
+		prompt = promptImproveBackup;
+		promptImproveAcceptBaseline = null;
+		promptImprovePhase = 'idle';
+		startPromptImproveCooldown();
+		await tick();
+		document.getElementById('chat-input')?.focus();
+	};
+
 	let command = '';
 	export let showCommands = false;
 	$: showCommands =
@@ -440,6 +592,24 @@
 
 	let chatInputContainerElement;
 	let chatInputElement;
+
+	/** Improve prompt: stream AI rewrite, then optional accept/cancel + cooldown */
+	let promptImprovePhase: 'idle' | 'streaming' | 'preview' = 'idle';
+	let promptImproveCooldownActive = false;
+	const PROMPT_IMPROVE_COOLDOWN_MS = 8000;
+	let promptImproveBackup = '';
+	let promptImproveAcceptBaseline: string | null = null;
+	let promptImproveAbort: AbortController | null = null;
+
+	$: promptImproveButtonDisabled =
+		!prompt?.trim() ||
+		generating ||
+		promptImprovePhase === 'streaming' ||
+		promptImprovePhase === 'preview' ||
+		promptImproveCooldownActive ||
+		(promptImproveAcceptBaseline !== null &&
+			normalizePromptForCompare(prompt ?? '', promptImproveAcceptBaseline)) ||
+		!pickPromptImproveModel($models, selectedModelIds);
 
 	let filesInputElement;
 	let commandsElement;
@@ -612,8 +782,16 @@
 					};
 				}
 
-				// During the file upload, file content is automatically extracted.
-				const uploadedFile = await uploadFile(localStorage.token, file, metadata, process);
+				// Audio/video: wait for STT/extraction on the server (no background race with Send).
+				const avMedia =
+					file.type.startsWith('audio/') || file.type.startsWith('video/');
+				const uploadedFile = await uploadFile(
+					localStorage.token,
+					file,
+					metadata,
+					process,
+					avMedia ? { processInBackground: false } : undefined
+				);
 
 				if (uploadedFile) {
 					console.log('File upload completed:', {
@@ -1198,7 +1376,7 @@
 								await tick();
 								document.getElementById('chat-input')?.focus();
 
-								if ($settings?.speechAutoSend ?? false) {
+								if (($settings?.speechAutoSend ?? false) && promptImprovePhase !== 'streaming') {
 									dispatch('submit', prompt);
 								}
 							}}
@@ -1207,6 +1385,7 @@
 					<form
 						class="w-full flex flex-col gap-1.5 {recording ? 'hidden' : ''}"
 						on:submit|preventDefault={() => {
+							if (promptImprovePhase === 'streaming') return;
 							// check if selectedModels support image input
 							dispatch('submit', prompt);
 						}}
@@ -1499,6 +1678,9 @@
 
 																if (enterPressed) {
 																	e.preventDefault();
+																	if (promptImprovePhase === 'streaming') {
+																		return;
+																	}
 																	if (prompt !== '' || files.length > 0) {
 																		dispatch('submit', prompt);
 																	}
@@ -1558,6 +1740,27 @@
 										{/key}
 									{/if}
 								</div>
+								{#if promptImprovePhase === 'preview'}
+									<div
+										class="px-2.5 pt-1 flex flex-wrap gap-2 items-center text-xs text-gray-600 dark:text-gray-300"
+									>
+										<span>{$i18n.t('Preview')}</span>
+										<button
+											type="button"
+											class="px-2 py-0.5 rounded-lg bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700"
+											on:click={() => acceptPromptImprove()}
+										>
+											{$i18n.t('Keep improved prompt')}
+										</button>
+										<button
+											type="button"
+											class="px-2 py-0.5 rounded-lg text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800"
+											on:click={() => cancelPromptImprove()}
+										>
+											{$i18n.t('Cancel')}
+										</button>
+									</div>
+								{/if}
 							</div>
 
 							<div class=" flex justify-between mt-0.5 mb-2.5 mx-0.5 max-w-full" dir="ltr">
@@ -1621,6 +1824,25 @@
 											<PlusAlt className="size-5.5" />
 										</div>
 									</InputMenu>
+
+									{#if $settings?.showPromptImproveButton ?? true}
+										<Tooltip content={$i18n.t('Improve Prompt')} placement="top">
+											<button
+												type="button"
+												id="prompt-improve-button"
+												disabled={promptImproveButtonDisabled}
+												class="bg-transparent hover:bg-gray-100 text-gray-700 dark:text-white dark:hover:bg-gray-800 rounded-full size-8 flex justify-center items-center outline-hidden focus:outline-hidden disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+												aria-label={$i18n.t('Improve Prompt')}
+												on:click|preventDefault={() => runPromptImprove()}
+											>
+												{#if promptImprovePhase === 'streaming'}
+													<Spinner className="size-4" />
+												{:else}
+													<Sparkles className="size-4.5" strokeWidth="1.5" />
+												{/if}
+											</button>
+										</Tooltip>
+									{/if}
 
 									{#if showWebSearchButton || showImageGenerationButton || showCodeInterpreterButton || showToolsButton || (toggleFilters && toggleFilters.length > 0)}
 										<div
@@ -2003,7 +2225,9 @@
 															? 'bg-black text-white hover:bg-gray-900 dark:bg-white dark:text-black dark:hover:bg-gray-100 '
 															: 'text-white bg-gray-200 dark:text-gray-900 dark:bg-gray-700 disabled'} transition rounded-full p-1.5 self-center"
 														type="submit"
-														disabled={(prompt === '' && files.length === 0) || uploadPending}
+														disabled={(prompt === '' && files.length === 0) ||
+															uploadPending ||
+															promptImprovePhase === 'streaming'}
 													>
 														{#if uploadPending}
 															<Spinner className="size-5" />

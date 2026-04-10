@@ -333,9 +333,19 @@ export const verifyOpenAIConnection = async (
 export const chatCompletion = async (
 	token: string = '',
 	body: object,
-	url: string = `${WEBUI_BASE_URL}/api`
+	url: string = `${WEBUI_BASE_URL}/api`,
+	externalAbortSignal?: AbortSignal
 ): Promise<[Response | null, AbortController]> => {
 	const controller = new AbortController();
+	if (externalAbortSignal) {
+		externalAbortSignal.addEventListener(
+			'abort',
+			() => {
+				controller.abort();
+			},
+			{ once: true }
+		);
+	}
 	let error = null;
 
 	const res = await fetch(`${url}/chat/completions`, {

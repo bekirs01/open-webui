@@ -50,6 +50,7 @@
 	let showFormattingToolbar = false;
 	let insertPromptAsRichText = false;
 	let promptAutocomplete = false;
+	let showPromptImproveButton = true;
 
 	let largeTextAsFile = false;
 
@@ -220,6 +221,7 @@
 		showFormattingToolbar = $settings?.showFormattingToolbar ?? false;
 		insertPromptAsRichText = $settings?.insertPromptAsRichText ?? false;
 		promptAutocomplete = $settings?.promptAutocomplete ?? false;
+		showPromptImproveButton = $settings?.showPromptImproveButton ?? true;
 
 		insertSuggestionPrompt = $settings?.insertSuggestionPrompt ?? false;
 		keepFollowUpPrompts = $settings?.keepFollowUpPrompts ?? false;
@@ -1159,6 +1161,25 @@
 					</div>
 				</div>
 			{/if}
+
+			<div>
+				<div class=" py-0.5 flex w-full justify-between">
+					<div id="show-prompt-improve-button-label" class=" self-center text-xs">
+						{$i18n.t('Show Improve Prompt button')}
+					</div>
+
+					<div class="flex items-center gap-2 p-1">
+						<Switch
+							ariaLabelledbyId="show-prompt-improve-button-label"
+							tooltip={true}
+							bind:state={showPromptImproveButton}
+							on:change={() => {
+								saveSettings({ showPromptImproveButton });
+							}}
+						/>
+					</div>
+				</div>
+			</div>
 
 			{#if richTextInput}
 				<div>

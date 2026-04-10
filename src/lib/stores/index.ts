@@ -187,6 +187,8 @@ type Settings = {
 	widescreenMode?: null;
 	largeTextAsFile?: boolean;
 	promptAutocomplete?: boolean;
+	/** Show "Improve prompt" control next to the chat input (+) menu. Default true. */
+	showPromptImproveButton?: boolean;
 	hapticFeedback?: boolean;
 	responseAutoCopy?: any;
 	richTextInput?: boolean;

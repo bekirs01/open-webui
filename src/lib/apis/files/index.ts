@@ -1,11 +1,17 @@
 import { WEBUI_API_BASE_URL } from '$lib/constants';
 import { splitStream } from '$lib/utils';
 
+/** Chat uploads: set `processInBackground: false` for audio/video so STT finishes before the request returns. */
+export type UploadFileOptions = {
+	processInBackground?: boolean;
+};
+
 export const uploadFile = async (
 	token: string,
 	file: File,
 	metadata?: object | null,
-	process?: boolean | null
+	process?: boolean | null,
+	options?: UploadFileOptions
 ) => {
 	const data = new FormData();
 	data.append('file', file);
@@ -17,10 +23,13 @@ export const uploadFile = async (
 	if (process !== undefined && process !== null) {
 		searchParams.append('process', String(process));
 	}
+	if (options?.processInBackground === false) {
+		searchParams.append('process_in_background', 'false');
+	}
 
 	let error = null;
 
-	const res = await fetch(`${WEBUI_API_BASE_URL}/files/?${searchParams.toString()}`, {
+	let res = await fetch(`${WEBUI_API_BASE_URL}/files/?${searchParams.toString()}`, {
 		method: 'POST',
 		headers: {
 			Accept: 'application/json',
@@ -89,6 +98,22 @@ export const uploadFile = async (
 
 	if (error) {
 		throw error;
+	}
+
+	// SSE only sends { status }; merge full file record so `data.content` is available for STT/PDF, etc.
+	if (res?.id && process !== false) {
+		try {
+			const full = await getFileById(token, res.id);
+			if (full) {
+				res = {
+					...res,
+					...full,
+					data: full.data != null ? full.data : res.data
+				};
+			}
+		} catch (e) {
+			console.warn('getFileById after upload failed', e);
+		}
 	}
 
 	return res;

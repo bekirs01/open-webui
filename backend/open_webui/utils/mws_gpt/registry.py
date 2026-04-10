@@ -351,20 +351,21 @@ def classify_task_modality(
     input_mode: str | None,
 ) -> tuple[Capability, str]:
     """
-    Deterministic routing classification.
-    Returns (modality, reason).
+    Deterministic routing classification for **chat completions** (assistant text reply).
+
+    STT for uploads runs in Open WebUI's file pipeline; it must not route the main chat
+    request to Whisper. Whisper/speaches is not a chat model — Auto previously picked
+    whisper-turbo-local for audio attachments and caused 500 on /v1/chat/completions.
     """
     if input_mode and input_mode.lower() in ('voice', 'audio', 'call'):
-        # Audio already transcribed — route to text LLM, not Whisper
-        if message_text and message_text.strip():
-            return 'text', 'audio_transcribed_use_text'
-        return 'audio_transcription', 'input_mode_voice_or_audio'
+        return 'text', 'input_mode_voice_or_audio'
 
     if 'audio' in attachments:
-        # Audio already transcribed — route to text LLM, not Whisper
-        if message_text and message_text.strip():
-            return 'text', 'audio_transcribed_use_text'
-        return 'audio_transcription', 'audio_attachment'
+        # Transcript is (or will be) user message text; same as plain text chat for routing.
+        if (message_text or '').strip():
+            return 'text', 'audio_attachment_with_transcript'
+        return 'text', 'audio_attachment_use_text_model'
+
     if 'image' in attachments:
         return 'vision', 'image_attachment'
 

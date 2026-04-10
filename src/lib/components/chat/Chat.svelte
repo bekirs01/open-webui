@@ -892,9 +892,17 @@
 				};
 			}
 
-			// Upload file to server
+			// Upload file to server (block until STT for audio/video so Send is safe)
 			console.log('Uploading file to server...');
-			const uploadedFile = await uploadFile(localStorage.token, file, metadata);
+			const avMedia =
+				file.type.startsWith('audio/') || file.type.startsWith('video/');
+			const uploadedFile = await uploadFile(
+				localStorage.token,
+				file,
+				metadata,
+				null,
+				avMedia ? { processInBackground: false } : undefined
+			);
 
 			if (!uploadedFile) {
 				throw new Error('Server returned null response for file upload');
@@ -1795,6 +1803,32 @@
 	// Chat functions
 	//////////////////////////
 
+	/** STT / extraction stores text on the file record — use it when the input box is still empty (fixes empty user messages to the API). */
+	const extractUploadedFileText = (file) => {
+		if (!file) return '';
+		const nested = file?.file?.data?.content ?? file?.file?.data?.text;
+		if (typeof nested === 'string' && nested.trim()) return nested.trim();
+		const flat = file?.data?.content ?? file?.content;
+		if (typeof flat === 'string' && flat.trim()) return flat.trim();
+		return '';
+	};
+
+	const resolvePromptWithFileText = (text, fileList) => {
+		const trimmed = (text ?? '').trim();
+		if (trimmed) return text ?? '';
+		const parts = [];
+		for (const f of fileList ?? []) {
+			const c = extractUploadedFileText(f);
+			if (c) parts.push(c);
+		}
+		return parts.length ? parts.join('\n\n') : text ?? '';
+	};
+
+	const hasNonImageAttachment = (fileList) =>
+		(fileList ?? []).some(
+			(f) => f?.type !== 'image' && !(f?.content_type ?? '').startsWith('image/')
+		);
+
 	const submitPrompt = async (userPrompt, { _raw = false } = {}) => {
 		console.log('submitPrompt', userPrompt, $chatId);
 
@@ -1841,6 +1875,16 @@
 			return;
 		}
 
+		const effectivePrompt = resolvePromptWithFileText(userPrompt, files);
+		if (!effectivePrompt?.trim() && files.length > 0 && hasNonImageAttachment(files)) {
+			toast.error(
+				$i18n.t(
+					'Could not read file content. Wait until processing finishes, then try again.'
+				)
+			);
+			return;
+		}
+
 		// Check if the assistant is still generating the main response
 		// (don't block on background tasks like title gen, follow-ups, tags)
 		const lastMessage = history.currentId ? history.messages[history.currentId] : null;
@@ -1852,7 +1896,7 @@
 				const _files = structuredClone(files);
 				chatRequestQueues.update((q) => ({
 					...q,
-					[$chatId]: [...(q[$chatId] ?? []), { id: uuidv4(), prompt: userPrompt, files: _files }]
+					[$chatId]: [...(q[$chatId] ?? []), { id: uuidv4(), prompt: effectivePrompt, files: _files }]
 				}));
 				// Clear input
 				messageInput?.setText('');
@@ -1905,7 +1949,7 @@
 			parentId: messages.length !== 0 ? messages.at(-1).id : null,
 			childrenIds: [],
 			role: 'user',
-			content: userPrompt,
+			content: effectivePrompt,
 			files: _files.length > 0 ? _files : undefined,
 			timestamp: Math.floor(Date.now() / 1000), // Unix epoch
 			models: selectedModels

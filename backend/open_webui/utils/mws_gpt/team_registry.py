@@ -255,7 +255,7 @@ def enrich_model_meta(model: dict[str, Any]) -> None:
     meta['mws_capabilities'] = [UI_LABEL[cap]]
     meta['mws_embedding_only'] = cap == 'embedding'
     meta['mws_audio_only'] = cap == 'audio_transcription'
-    meta['mws_chat_allowed'] = cap not in ('embedding',)
+    meta['mws_chat_allowed'] = cap not in ('embedding', 'audio_transcription')
 
 
 def validate_chat_model_selection(model_id: str, form_data: dict[str, Any]) -> tuple[bool, str | None]:
@@ -270,12 +270,9 @@ def validate_chat_model_selection(model_id: str, form_data: dict[str, Any]) -> t
             'This model is for embeddings API only, not chat. Choose a text or Auto model.'
         )
     if cap == 'audio_transcription':
-        from open_webui.utils.mws_gpt.registry import collect_attachment_kinds
-
-        att = collect_attachment_kinds(form_data.get('files'), form_data.get('messages'))
-        if 'audio' not in att:
-            return (
-                False,
-                'Whisper models need an audio attachment or voice input. Upload audio or use Auto.',
-            )
+        # Whisper is for /audio/transcriptions (STT), not chat/completions — even with audio attached.
+        return (
+            False,
+            'Whisper/STT models are not for chat. Use Auto or a text model; uploaded audio is transcribed automatically.',
+        )
     return True, None
