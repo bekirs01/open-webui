@@ -1151,6 +1151,12 @@ MWS_GPT_AUTO_ROUTING = PersistentConfig(
     os.environ.get('MWS_GPT_AUTO_ROUTING', 'True').lower() == 'true',
 )
 
+MWS_GPT_ORCHESTRATION = PersistentConfig(
+    'MWS_GPT_ORCHESTRATION',
+    'mws_gpt.orchestration',
+    os.environ.get('MWS_GPT_ORCHESTRATION', 'True').lower() == 'true',
+)
+
 MWS_GPT_TAG = PersistentConfig(
     'MWS_GPT_TAG',
     'mws_gpt.connection_tag',

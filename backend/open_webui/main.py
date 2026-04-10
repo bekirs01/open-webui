@@ -136,6 +136,7 @@ from open_webui.config import (
     MWS_GPT_DEFAULT_AUDIO_MODEL,
     MWS_GPT_DEFAULT_EMBEDDING_MODEL,
     MWS_GPT_AUTO_ROUTING,
+    MWS_GPT_ORCHESTRATION,
     MWS_GPT_TAG,
     # Direct Connections
     ENABLE_DIRECT_CONNECTIONS,
@@ -802,6 +803,7 @@ app.state.config.MWS_GPT_DEFAULT_IMAGE_MODEL = MWS_GPT_DEFAULT_IMAGE_MODEL
 app.state.config.MWS_GPT_DEFAULT_AUDIO_MODEL = MWS_GPT_DEFAULT_AUDIO_MODEL
 app.state.config.MWS_GPT_DEFAULT_EMBEDDING_MODEL = MWS_GPT_DEFAULT_EMBEDDING_MODEL
 app.state.config.MWS_GPT_AUTO_ROUTING = MWS_GPT_AUTO_ROUTING
+app.state.config.MWS_GPT_ORCHESTRATION = MWS_GPT_ORCHESTRATION
 app.state.config.MWS_GPT_TAG = MWS_GPT_TAG
 
 app.state.OPENAI_MODELS = {}
@@ -1735,6 +1737,29 @@ async def chat_completion(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
     model_id = form_data.get('model', None)
+    # MWS: Whisper/STT modelleri /chat/completions ile uyumlu değil; ses dosyası varsa metin modeline geç (görsel boru hattı gibi).
+    if is_mws_gpt_active(request.app.state.config) and model_id:
+        try:
+            from open_webui.utils.mws_gpt.registry import collect_attachment_kinds
+            from open_webui.utils.mws_gpt.team_registry import pick_text_model_for_chat_followup
+
+            if get_primary_capability(model_id) == 'audio_transcription':
+                att = collect_attachment_kinds(form_data.get('files'), form_data.get('messages'))
+                if 'audio' in att:
+                    rep = pick_text_model_for_chat_followup(request)
+                    if rep:
+                        form_data['_mws_whisper_selected_model_id'] = model_id
+                        form_data['_mws_whisper_pipeline'] = True
+                        form_data['model'] = rep
+                        model_id = rep
+                        log.info(
+                            '[MWS] whisper→text for chat: using %s (STT model was %s)',
+                            rep,
+                            form_data.get('_mws_whisper_selected_model_id'),
+                        )
+        except Exception as e:
+            log.debug('[MWS] whisper→text swap at chat entry: %s', e)
+
     if is_mws_gpt_active(request.app.state.config) and model_id and get_primary_capability(model_id) is not None:
         ok, err = validate_chat_model_selection(model_id, form_data)
         if not ok:

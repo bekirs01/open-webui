@@ -1848,6 +1848,16 @@ async def chat_image_generation_handler(request: Request, form_data: dict, extra
                 log.exception(e)
                 prompt = user_message
 
+        if not isinstance(prompt, str):
+            prompt = str(prompt) if prompt else (user_message or '')
+        try:
+            from open_webui.utils.mws_gpt.image_prompt import build_mws_image_prompt
+
+            if use_raw_prompt or form_data.get('_mws_image_pipeline'):
+                prompt = build_mws_image_prompt(user_message or prompt)
+        except Exception as e:
+            log.debug('[MWS] image prompt normalize: %s', e)
+
         try:
             if mid_sel:
                 try:
@@ -1855,9 +1865,15 @@ async def chat_image_generation_handler(request: Request, form_data: dict, extra
                 except Exception as e:
                     log.warning('set_image_model(%s): %s', mid_sel, e)
 
+            img_form: dict = {'prompt': prompt}
+            if bool(form_data.get('mws_deep_thinking')):
+                deep_sz = (os.environ.get('MWS_DEEP_THINKING_IMAGE_SIZE') or '1024x1024').strip()
+                if deep_sz:
+                    img_form['size'] = deep_sz
+
             images = await image_generations(
                 request=request,
-                form_data=CreateImageForm(**{'prompt': prompt}),
+                form_data=CreateImageForm(**img_form),
                 metadata={
                     'chat_id': metadata.get('chat_id', None),
                     'message_id': metadata.get('message_id', None),
@@ -1887,11 +1903,15 @@ async def chat_image_generation_handler(request: Request, form_data: dict, extra
                 }
             )
 
-            system_message_content = (
-                '<context>The image is displayed above. Reply briefly in the same natural language as the user\'s '
-                'last message (match Turkish, English, etc.). Do not mix languages, do not output code fragments '
-                'or token soup.</context>'
-            )
+            if form_data.get('_mws_pure_draw_intent'):
+                system_message_content = ''
+                form_data['_mws_skip_text_completion'] = True
+            else:
+                system_message_content = (
+                    '<context>The image is displayed above. Reply briefly in the same natural language as the user\'s '
+                    'last message (match Turkish, English, etc.). Do not mix languages, do not output code fragments '
+                    'or token soup.</context>'
+                )
         except Exception as e:
             log.debug(e)
 
@@ -2212,12 +2232,14 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     form_data = apply_params_to_form_data(form_data, model)
     log.debug(f'form_data: {form_data}')
 
-    # MWS: saf görsel modeli web araması / sorgu üretiminde kullanma (404). Geçici metin modeli + gerçek görsel id sakla.
+    # MWS: saf görsel / STT modelini chat yan etkilerinde kullanma (404). Geçici metin modeli + gerçek model id sakla.
     try:
+        from open_webui.utils.mws_gpt.registry import collect_attachment_kinds
         from open_webui.utils.mws_gpt.team_registry import get_primary_capability, pick_text_model_for_chat_followup
 
         mid_ch = (model.get('id') or form_data.get('model') or '').strip()
-        if get_primary_capability(mid_ch) == 'image_generation':
+        cap_ch = get_primary_capability(mid_ch)
+        if cap_ch == 'image_generation':
             rep = pick_text_model_for_chat_followup(request)
             if rep:
                 form_data['_mws_image_generation_model_id'] = mid_ch
@@ -2225,8 +2247,18 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 form_data['model'] = rep
                 model = request.app.state.MODELS.get(rep) or model
                 log.info('[MWS] pipeline uses text model %s for side-effects; image id=%s', rep, mid_ch)
+        elif cap_ch == 'audio_transcription' and not form_data.get('_mws_whisper_pipeline'):
+            att = collect_attachment_kinds(form_data.get('files'), form_data.get('messages'))
+            if 'audio' in att:
+                rep = pick_text_model_for_chat_followup(request)
+                if rep:
+                    form_data['_mws_whisper_selected_model_id'] = mid_ch
+                    form_data['_mws_whisper_pipeline'] = True
+                    form_data['model'] = rep
+                    model = request.app.state.MODELS.get(rep) or model
+                    log.info('[MWS] pipeline uses text model %s for chat; STT id=%s', rep, mid_ch)
     except Exception as e:
-        log.debug('[MWS] image model swap at pipeline start: %s', e)
+        log.debug('[MWS] image/audio model swap at pipeline start: %s', e)
 
     # Load messages from DB when available — DB preserves structured 'output' items
     # which the frontend strips, causing tool calls to be merged into content.
@@ -2238,6 +2270,15 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         if db_messages:
             system_message = get_system_message(form_data.get('messages', []))
             form_data['messages'] = [system_message, *db_messages] if system_message else db_messages
+
+            try:
+                from open_webui.utils.mws_gpt.artifact_resolver import extract_last_artifact_for_export
+
+                form_data['_mws_last_artifact'] = extract_last_artifact_for_export(
+                    list(form_data.get('messages') or [])
+                )
+            except Exception:
+                form_data['_mws_last_artifact'] = None
 
             # Inject image files into content as image_url parts (mirrors frontend logic)
             for message in form_data['messages']:
@@ -2266,8 +2307,52 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     # Process messages with OR-aligned output items for clean LLM messages
     form_data['messages'] = process_messages_with_output(form_data.get('messages', []))
 
+    try:
+        from open_webui.utils.mws_gpt.export_pipeline import try_mws_export_conversion
+
+        # Export/conversion is server-side; must run even when MWS is off so follow-ups do not hit the LLM.
+        form_data = await try_mws_export_conversion(request, form_data, user, metadata)
+        if form_data.get('_mws_export_llm_fallback') and not form_data.get('_mws_export_completion'):
+            form_data['messages'] = add_or_update_system_message(
+                '[EXPORT_FILE_REMINDER]\n'
+                'The user asked for a downloadable file (PDF, PNG, JPG, etc.). '
+                'You MUST call the built-in tools: export_markdown_to_pdf (tables/text/markdown), '
+                'export_markdown_to_png (text/table as image), export_image_to_pdf (for images). '
+                'Put the relevant content from the conversation into the tool. '
+                'Do not refuse or say you cannot save files — produce the attachment. '
+                'After the file is attached, reply in one short sentence.',
+                form_data.get('messages') or [],
+                append=True,
+            )
+    except Exception as e:
+        log.warning('[MWS] export conversion pre-policy: %s', e)
+
+    try:
+        from open_webui.utils.mws_gpt.active import is_mws_gpt_active
+        from open_webui.utils.mws_gpt.quality_prompt import maybe_inject_mws_assistant_policy
+        from open_webui.utils.mws_gpt.registry import (
+            collect_attachment_kinds,
+            extract_last_user_text,
+            is_pure_image_draw_turn,
+        )
+
+        if is_mws_gpt_active(request.app.state.config):
+            _txt = extract_last_user_text(form_data.get('messages') or [])
+            _att = collect_attachment_kinds(form_data.get('files'), form_data.get('messages'))
+            _im = form_data.get('input_mode') or (metadata.get('params') or {}).get('input_mode')
+            form_data['_mws_pure_draw_intent'] = is_pure_image_draw_turn(_txt, _att, _im)
+        else:
+            form_data['_mws_pure_draw_intent'] = False
+        if not form_data.get('_mws_export_completion'):
+            maybe_inject_mws_assistant_policy(request, form_data, model)
+    except Exception as e:
+        log.debug('[MWS] pure draw / quality policy: %s', e)
+        form_data['_mws_pure_draw_intent'] = False
+
+    # Auto workflow preflight moved to after web search + RAG (see below) so draft/polish see retrieved context.
+
     system_message = get_system_message(form_data.get('messages', []))
-    if system_message:  # Chat Controls/User Settings
+    if system_message and not form_data.get('_mws_export_completion'):  # Chat Controls/User Settings
         try:
             form_data = apply_system_prompt_to_body(
                 system_message.get('content'), form_data, metadata, user, replace=True
@@ -2275,7 +2360,8 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         except Exception:
             pass
 
-    form_data = await convert_url_images_to_base64(form_data)
+    if not form_data.get('_mws_export_completion'):
+        form_data = await convert_url_images_to_base64(form_data)
 
     event_emitter = get_event_emitter(metadata)
     event_caller = get_event_call(metadata)
@@ -2325,7 +2411,9 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     if folder_id and user:
         folder = Folders.get_folder_by_id_and_user_id(folder_id, user.id)
 
-        if folder and folder.data:
+        if folder and folder.data and not form_data.get('_mws_pure_draw_intent') and not form_data.get(
+            '_mws_export_completion'
+        ):
             if 'system_prompt' in folder.data:
                 form_data = apply_system_prompt_to_body(folder.data['system_prompt'], form_data, metadata, user)
             if 'files' in folder.data:
@@ -2343,7 +2431,12 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     user_message = get_last_user_message(form_data['messages'])
     model_knowledge = model.get('info', {}).get('meta', {}).get('knowledge', False)
 
-    if model_knowledge and metadata.get('params', {}).get('function_calling') != 'native':
+    if (
+        model_knowledge
+        and metadata.get('params', {}).get('function_calling') != 'native'
+        and not form_data.get('_mws_pure_draw_intent')
+        and not form_data.get('_mws_export_completion')
+    ):
         await event_emitter(
             {
                 'type': 'status',
@@ -2425,17 +2518,29 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         _input_mode = form_data.get('input_mode') or (
             (metadata.get('params') or {}).get('input_mode')
         )
-        if (
+        _deep = bool(form_data.get('mws_deep_thinking'))
+        _ws_ok = (
             is_mws_gpt_active(request.app.state.config)
             and os.environ.get('MWS_INJECT_WEB_SEARCH_FEATURE', 'true').lower() == 'true'
             and getattr(request.app.state.config, 'ENABLE_WEB_SEARCH', False)
-            and should_inject_web_search_for_message(
+        )
+        if _ws_ok and (
+            should_inject_web_search_for_message(
                 message_text=_last_user,
                 attachments=_att,
                 input_mode=_input_mode,
             )
+            or (
+                _deep
+                and (_last_user or '').strip()
+                and not form_data.get('_mws_pure_draw_intent')
+                and not form_data.get('_mws_image_pipeline')
+            )
         ):
             features['web_search'] = True
+        # Saf çizim: istemci web_search gönderse bile kaynak/RAG yolu açılmasın
+        if form_data.get('_mws_pure_draw_intent') or form_data.get('_mws_image_pipeline'):
+            features['web_search'] = False
     except Exception:
         pass
     extra_params['__features__'] = features
@@ -2454,7 +2559,10 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
         if 'memory' in features and features['memory']:
             # Skip forced memory injection when native FC is enabled - model can use memory tools
-            if metadata.get('params', {}).get('function_calling') != 'native':
+            if (
+                metadata.get('params', {}).get('function_calling') != 'native'
+                and not form_data.get('_mws_pure_draw_intent')
+            ):
                 form_data = await chat_memory_handler(request, form_data, extra_params, user)
 
         if 'image_generation' in features and features['image_generation']:
@@ -2857,6 +2965,17 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     # If context is not empty, insert it into the messages
     if sources and prompt:
         form_data['messages'] = apply_source_context_to_messages(request, form_data['messages'], sources, prompt)
+
+    # MWS Auto: drafter→polish after retrieval so internal steps see web/RAG context (deep thinking).
+    try:
+        from open_webui.utils.mws_gpt.workflow_runner import apply_mws_auto_workflow_preflight
+
+        if not form_data.get('_mws_export_completion'):
+            form_data, model = await apply_mws_auto_workflow_preflight(
+                request, form_data, user, metadata, model
+            )
+    except Exception as e:
+        log.warning('[MWS] auto workflow preflight (post-retrieval): %s', e)
 
     # If there are citations, add them to the data_items
     sources = [

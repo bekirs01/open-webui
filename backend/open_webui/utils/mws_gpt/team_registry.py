@@ -135,6 +135,29 @@ def get_primary_capability(model_id: str) -> PrimaryCap | None:
         return 'image_generation'
     if any(x in low for x in ('dall-e', 'dalle', 'stable-diffusion', 'sdxl', 'flux-schnell', '/flux')):
         return 'image_generation'
+    if 'whisper' in low or ('turbo-local' in low and 'whisper' in low):
+        return 'audio_transcription'
+    if any(
+        x in low
+        for x in (
+            'qwen2.5-vl',
+            'qwen3-vl',
+            'vl-72b',
+            'cotype-pro-vl',
+            'llava',
+        )
+    ):
+        return 'vision'
+    if 'qwen-image' not in low and (
+        'bge' in low
+        or 'text-embedding' in low
+        or 'qwen3-embedding' in low
+        or low.endswith('embedding')
+    ):
+        if 'qwen2.5-vl' not in low and 'qwen3-vl' not in low and 'vl-' not in low:
+            return 'embedding'
+    if 'qwen3-coder' in low or 'coder-480' in low:
+        return 'code'
     return None
 
 
@@ -195,6 +218,12 @@ def pick_auto_target_model(
     if modality == 'embedding':
         # Auto must not pick embedding for chat — caller should not use this for chat reply
         return None, 'MWS: embedding not used for Auto chat.'
+
+    if modality == 'export':
+        pick = first_available(AUTO_TEXT_ORDER, av)
+        if pick:
+            return pick, None
+        return None, 'MWS: no text model for export fallback.'
 
     # text default
     pick = first_available(AUTO_TEXT_ORDER, av)
@@ -267,7 +296,7 @@ def validate_chat_model_selection(model_id: str, form_data: dict[str, Any]) -> t
         return True, None
     if cap == 'embedding':
         return False, (
-            'This model is for embeddings API only, not chat. Choose a text or Auto model.'
+            'This model is for embeddings only, not chat. Pick a text model or Auto.'
         )
     if cap == 'audio_transcription':
         # Whisper is for /audio/transcriptions (STT), not chat/completions — even with audio attached.

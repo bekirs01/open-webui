@@ -6,8 +6,10 @@ These tools are automatically available when native function calling is enabled.
 IMPORTANT: DO NOT IMPORT THIS MODULE DIRECTLY IN OTHER PARTS OF THE CODEBASE.
 """
 
+import io
 import json
 import logging
+import re
 import time
 import asyncio
 from typing import Optional
@@ -352,6 +354,222 @@ async def edit_image(
     except Exception as e:
         log.exception(f'edit_image error: {e}')
         return json.dumps({'error': str(e)})
+
+
+# =============================================================================
+# EXPORT: PDF / PNG (indirilebilir ekler)
+# =============================================================================
+
+
+def _safe_export_filename(title: str, ext: str) -> str:
+    base = re.sub(r'[^\w\-.]+', '_', (title or 'export').strip())[:72] or 'export'
+    if not base.lower().endswith(f'.{ext}'):
+        return f'{base}.{ext}'
+    return base
+
+
+async def export_markdown_to_pdf(
+    markdown_content: str,
+    title: str = 'Document',
+    __request__: Request = None,
+    __user__: dict = None,
+    __event_emitter__= None,
+    __chat_id__: str = None,
+    __message_id__: str = None,
+) -> str:
+    """
+    Export markdown text (including tables) to a PDF file the user can download.
+    Use when the user asks for PDF format, to save as PDF, or to download the table/content as PDF.
+    """
+    if __request__ is None:
+        return json.dumps({'error': 'Request context not available'}, ensure_ascii=False)
+
+    try:
+        from starlette.datastructures import UploadFile
+
+        from open_webui.routers.files import upload_file_handler
+        from open_webui.utils.export_formats import markdown_to_pdf_bytes
+
+        fn = _safe_export_filename(title, 'pdf')
+        pdf_b = markdown_to_pdf_bytes(title, markdown_content or '')
+        user = UserModel(**__user__) if __user__ else None
+        file = UploadFile(
+            file=io.BytesIO(pdf_b),
+            filename=fn,
+            headers={'content-type': 'application/pdf'},
+        )
+        file_item = upload_file_handler(
+            __request__,
+            file=file,
+            metadata={},
+            process=False,
+            user=user,
+        )
+        entry = {
+            'type': 'file',
+            'url': file_item.id,
+            'name': fn,
+            'size': len(pdf_b),
+            'content_type': 'application/pdf',
+        }
+        if __chat_id__ and __message_id__:
+            db = Chats.add_message_files_by_id_and_message_id(__chat_id__, __message_id__, [entry])
+            if db is not None:
+                pass
+        if __event_emitter__:
+            await __event_emitter__(
+                {
+                    'type': 'chat:message:files',
+                    'data': {'files': [entry]},
+                }
+            )
+        return json.dumps(
+            {
+                'status': 'success',
+                'message': 'PDF is attached; the user can download it from the file chip in the chat.',
+                'filename': fn,
+            },
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        log.exception(f'export_markdown_to_pdf error: {e}')
+        return json.dumps({'error': str(e)}, ensure_ascii=False)
+
+
+async def export_markdown_to_png(
+    markdown_content: str,
+    title: str = 'Visualization',
+    __request__: Request = None,
+    __user__: dict = None,
+    __event_emitter__= None,
+    __chat_id__: str = None,
+    __message_id__: str = None,
+) -> str:
+    """
+    Render content as a PNG image for visualization.
+    Use when the user asks to visualize, export as PNG, or show the table as an image.
+    """
+    if __request__ is None:
+        return json.dumps({'error': 'Request context not available'}, ensure_ascii=False)
+
+    try:
+        from starlette.datastructures import UploadFile
+
+        from open_webui.routers.files import upload_file_handler
+        from open_webui.utils.export_formats import text_to_png_bytes
+
+        fn = _safe_export_filename(title, 'png')
+        png_b = text_to_png_bytes(title, markdown_content or '')
+        user = UserModel(**__user__) if __user__ else None
+        file = UploadFile(
+            file=io.BytesIO(png_b),
+            filename=fn,
+            headers={'content-type': 'image/png'},
+        )
+        file_item = upload_file_handler(
+            __request__,
+            file=file,
+            metadata={},
+            process=False,
+            user=user,
+        )
+        path = __request__.app.url_path_for('get_file_content_by_id', id=file_item.id)
+        path_s = path if str(path).startswith('/') else f'/{path}'
+        entry = {
+            'type': 'image',
+            'url': path_s,
+            'name': fn,
+            'size': len(png_b),
+            'content_type': 'image/png',
+        }
+        if __chat_id__ and __message_id__:
+            Chats.add_message_files_by_id_and_message_id(__chat_id__, __message_id__, [entry])
+        if __event_emitter__:
+            await __event_emitter__(
+                {
+                    'type': 'chat:message:files',
+                    'data': {'files': [entry]},
+                }
+            )
+        return json.dumps(
+            {
+                'status': 'success',
+                'message': 'PNG is attached and shown in the chat; the user can open or download it.',
+                'filename': fn,
+            },
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        log.exception(f'export_markdown_to_png error: {e}')
+        return json.dumps({'error': str(e)}, ensure_ascii=False)
+
+
+async def export_image_to_pdf(
+    image_url: str,
+    title: str = 'Image',
+    __request__: Request = None,
+    __user__: dict = None,
+    __event_emitter__= None,
+    __chat_id__: str = None,
+    __message_id__: str = None,
+) -> str:
+    """
+    Put an existing image into a single-page PDF the user can download.
+    Use when the user asks to convert an image to PDF, or save the picture as PDF.
+    image_url: HTTPS URL, data:image URL, or an Open WebUI file id from the chat.
+    """
+    if __request__ is None:
+        return json.dumps({'error': 'Request context not available'}, ensure_ascii=False)
+
+    try:
+        from starlette.datastructures import UploadFile
+
+        from open_webui.routers.files import upload_file_handler
+        from open_webui.utils.export_formats import get_image_bytes_from_source, image_bytes_to_pdf_bytes
+
+        raw = get_image_bytes_from_source(image_url)
+        pdf_b = image_bytes_to_pdf_bytes(raw)
+        fn = _safe_export_filename(title, 'pdf')
+        user = UserModel(**__user__) if __user__ else None
+        file = UploadFile(
+            file=io.BytesIO(pdf_b),
+            filename=fn,
+            headers={'content-type': 'application/pdf'},
+        )
+        file_item = upload_file_handler(
+            __request__,
+            file=file,
+            metadata={},
+            process=False,
+            user=user,
+        )
+        entry = {
+            'type': 'file',
+            'url': file_item.id,
+            'name': fn,
+            'size': len(pdf_b),
+            'content_type': 'application/pdf',
+        }
+        if __chat_id__ and __message_id__:
+            Chats.add_message_files_by_id_and_message_id(__chat_id__, __message_id__, [entry])
+        if __event_emitter__:
+            await __event_emitter__(
+                {
+                    'type': 'chat:message:files',
+                    'data': {'files': [entry]},
+                }
+            )
+        return json.dumps(
+            {
+                'status': 'success',
+                'message': 'PDF with the image is attached; the user can download it from the file chip.',
+                'filename': fn,
+            },
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        log.exception(f'export_image_to_pdf error: {e}')
+        return json.dumps({'error': str(e)}, ensure_ascii=False)
 
 
 # =============================================================================

@@ -59,6 +59,9 @@
 
 	export let pinModelHandler: (modelId: string) => void = () => {};
 
+	/** Modelleri aile adına göre (Qwen, Llama, Auto, …) grupla; Auto ve tek tek seçim aynı listede kalır */
+	export let groupByFamily = true;
+
 	let tagsContainerElement;
 
 	let show = false;
@@ -81,12 +84,13 @@
 				...item,
 				modelName: item.model?.name,
 				tags: (item.model?.tags ?? []).map((tag) => tag.name).join(' '),
-				desc: item.model?.info?.meta?.description
+				desc: item.model?.info?.meta?.description,
+				groupLabel: item.groupLabel ?? ''
 			};
 			return _item;
 		}),
 		{
-			keys: ['value', 'tags', 'modelName'],
+			keys: ['value', 'tags', 'modelName', 'groupLabel'],
 			threshold: 0.4
 		}
 	);
@@ -99,7 +103,8 @@
 						...item,
 						modelName: item.model?.name,
 						tags: (item.model?.tags ?? []).map((tag) => tag.name).join(' '),
-						desc: item.model?.info?.meta?.description
+						desc: item.model?.info?.meta?.description,
+						groupLabel: item.groupLabel ?? ''
 					};
 					return _item;
 				})
@@ -160,6 +165,20 @@
 					})
 	).filter((item) => !(item.model?.info?.meta?.hidden ?? false));
 
+	$: hasGroupMeta = items.some((i) => i.groupKey != null && String(i.groupKey).length > 0);
+	$: useGroupedList = groupByFamily && hasGroupMeta;
+
+	$: groupedSortedItems = useGroupedList
+		? [...filteredItems].sort((a, b) => {
+				const ga = String(a.groupKey ?? 'zzz');
+				const gb = String(b.groupKey ?? 'zzz');
+				if (ga !== gb) return ga.localeCompare(gb);
+				return (a.label ?? '').localeCompare(b.label ?? '');
+			})
+		: filteredItems;
+
+	$: listForNav = useGroupedList ? groupedSortedItems : filteredItems;
+
 	$: if (
 		selectedTag !== undefined ||
 		selectedConnectionType !== undefined ||
@@ -171,24 +190,23 @@
 	const resetView = async () => {
 		await tick();
 
-		const selectedInFiltered = filteredItems.findIndex((item) => item.value === value);
+		const selectedInFiltered = listForNav.findIndex((item) => item.value === value);
 
 		if (selectedInFiltered >= 0) {
-			// The selected model is visible in the current filter
 			selectedModelIdx = selectedInFiltered;
 		} else {
-			// The selected model is not visible, default to first item in filtered list
 			selectedModelIdx = 0;
 		}
 
-		// Set the virtual scroll position so the selected item is rendered and centered
-		const targetScrollTop = Math.max(0, selectedModelIdx * ITEM_HEIGHT - 128 + ITEM_HEIGHT / 2);
-		listScrollTop = targetScrollTop;
+		if (!useGroupedList) {
+			const targetScrollTop = Math.max(0, selectedModelIdx * ITEM_HEIGHT - 128 + ITEM_HEIGHT / 2);
+			listScrollTop = targetScrollTop;
 
-		await tick();
+			await tick();
 
-		if (listContainer) {
-			listContainer.scrollTop = targetScrollTop;
+			if (listContainer) {
+				listContainer.scrollTop = targetScrollTop;
+			}
 		}
 
 		await tick();
@@ -469,15 +487,15 @@
 											autocomplete="off"
 											aria-label={$i18n.t('Search In Models')}
 											on:keydown={(e) => {
-												if (e.code === 'Enter' && filteredItems.length > 0) {
-													value = filteredItems[selectedModelIdx].value;
+												if (e.code === 'Enter' && listForNav.length > 0) {
+													value = listForNav[selectedModelIdx].value;
 													show = false;
 													return; // dont need to scroll on selection
 												} else if (e.code === 'ArrowDown') {
 													e.stopPropagation();
 													selectedModelIdx = Math.min(
 														selectedModelIdx + 1,
-														filteredItems.length - 1
+														listForNav.length - 1
 													);
 												} else if (e.code === 'ArrowUp') {
 													e.stopPropagation();
@@ -633,28 +651,57 @@
 											aria-label={$i18n.t('Available models')}
 											bind:this={listContainer}
 											on:scroll={() => {
-												listScrollTop = listContainer.scrollTop;
+												if (!useGroupedList && listContainer) {
+													listScrollTop = listContainer.scrollTop;
+												}
 											}}
 										>
-											<div style="height: {visibleStart * ITEM_HEIGHT}px;" />
-											{#each filteredItems.slice(visibleStart, visibleEnd) as item, i (item.value)}
-												{@const index = visibleStart + i}
-												<ModelItem
-													{selectedModelIdx}
-													{item}
-													{index}
-													{value}
-													{pinModelHandler}
-													{unloadModelHandler}
-													onClick={() => {
-														value = item.value;
-														selectedModelIdx = index;
+											{#if useGroupedList}
+												{#each groupedSortedItems as item, index (item.value)}
+													{#if index === 0 || groupedSortedItems[index - 1].groupKey !== item.groupKey}
+														<div
+															class="px-3 pt-2 pb-0.5 text-[0.68rem] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 border-t border-gray-100 dark:border-gray-800/80 first:border-t-0 first:pt-1"
+															role="presentation"
+														>
+															{item.groupLabel ?? ''}
+														</div>
+													{/if}
+													<ModelItem
+														{selectedModelIdx}
+														{item}
+														{index}
+														{value}
+														{pinModelHandler}
+														{unloadModelHandler}
+														onClick={() => {
+															value = item.value;
+															selectedModelIdx = index;
 
-														show = false;
-													}}
-												/>
-											{/each}
-											<div style="height: {(filteredItems.length - visibleEnd) * ITEM_HEIGHT}px;" />
+															show = false;
+														}}
+													/>
+												{/each}
+											{:else}
+												<div style="height: {visibleStart * ITEM_HEIGHT}px;" />
+												{#each filteredItems.slice(visibleStart, visibleEnd) as item, i (item.value)}
+													{@const index = visibleStart + i}
+													<ModelItem
+														{selectedModelIdx}
+														{item}
+														{index}
+														{value}
+														{pinModelHandler}
+														{unloadModelHandler}
+														onClick={() => {
+															value = item.value;
+															selectedModelIdx = index;
+
+															show = false;
+														}}
+													/>
+												{/each}
+												<div style="height: {(filteredItems.length - visibleEnd) * ITEM_HEIGHT}px;" />
+											{/if}
 										</div>
 									{/if}
 

@@ -24,6 +24,7 @@ echo "→ npm install..."
 npm install
 
 echo ""
-echo "Tamam. Geliştirme için: npm run dev:all"
-echo "  Sadece arayüz: npm run dev:web"
-echo "  Sadece API:   npm run dev:backend"
+echo "Tamam."
+echo "  Sadece backend (API): npm run dev:backend"
+echo "  Arayüz + API birlikte: npm run dev:all"
+echo "  Sadece arayüz (Vite): npm run dev:web"

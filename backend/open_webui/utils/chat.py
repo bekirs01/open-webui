@@ -56,6 +56,85 @@ logging.basicConfig(stream=sys.stdout, level=GLOBAL_LOG_LEVEL)
 log = logging.getLogger(__name__)
 
 
+async def _mws_export_tool_completion_response(form_data: dict):
+    """Short assistant text after server-side export; files were emitted via websocket."""
+    import time
+
+    model = form_data.get('model') or ''
+    content = (form_data.get('_mws_export_assistant_content') or 'Done.').strip()
+    cid = f'chatcmpl-mws-{uuid.uuid4().hex[:24]}'
+    created = int(time.time())
+    base_chunk = {
+        'id': cid,
+        'object': 'chat.completion.chunk',
+        'created': created,
+        'model': model,
+    }
+    if form_data.get('stream'):
+
+        async def gen():
+            yield f"data: {json.dumps({**base_chunk, 'choices': [{'index': 0, 'delta': {'role': 'assistant'}, 'finish_reason': None}]})}\n\n"
+            # stream content in one chunk (short)
+            yield f"data: {json.dumps({**base_chunk, 'choices': [{'index': 0, 'delta': {'content': content}, 'finish_reason': None}]})}\n\n"
+            yield f"data: {json.dumps({**base_chunk, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]})}\n\n"
+            yield 'data: [DONE]\n\n'
+
+        return StreamingResponse(gen(), media_type='text/event-stream')
+
+    return {
+        'id': cid,
+        'object': 'chat.completion',
+        'created': created,
+        'model': model,
+        'choices': [
+            {
+                'index': 0,
+                'message': {'role': 'assistant', 'content': content},
+                'finish_reason': 'stop',
+            }
+        ],
+        'usage': {'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0},
+    }
+
+
+async def _mws_pure_image_empty_completion_response(form_data: dict):
+    """OpenAI-compatible empty assistant message (image-only turn)."""
+    import time
+
+    model = form_data.get('model') or ''
+    cid = f'chatcmpl-mws-{uuid.uuid4().hex[:24]}'
+    created = int(time.time())
+    base_chunk = {
+        'id': cid,
+        'object': 'chat.completion.chunk',
+        'created': created,
+        'model': model,
+    }
+    if form_data.get('stream'):
+        async def gen():
+            yield f"data: {json.dumps({**base_chunk, 'choices': [{'index': 0, 'delta': {'role': 'assistant'}, 'finish_reason': None}]})}\n\n"
+            yield f"data: {json.dumps({**base_chunk, 'choices': [{'index': 0, 'delta': {'content': ''}, 'finish_reason': None}]})}\n\n"
+            yield f"data: {json.dumps({**base_chunk, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]})}\n\n"
+            yield 'data: [DONE]\n\n'
+
+        return StreamingResponse(gen(), media_type='text/event-stream')
+
+    return {
+        'id': cid,
+        'object': 'chat.completion',
+        'created': created,
+        'model': model,
+        'choices': [
+            {
+                'index': 0,
+                'message': {'role': 'assistant', 'content': ''},
+                'finish_reason': 'stop',
+            }
+        ],
+        'usage': {'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0},
+    }
+
+
 # When the question has been asked, let silence not be the
 # answer. But if the answer must wait, let it come honest.
 async def generate_direct_chat_completion(
@@ -192,6 +271,12 @@ async def generate_chat_completion(
         raise Exception('Model not found')
 
     model = models[model_id]
+
+    if form_data.get('_mws_export_completion'):
+        return await _mws_export_tool_completion_response(form_data)
+
+    if form_data.get('_mws_skip_text_completion'):
+        return await _mws_pure_image_empty_completion_response(form_data)
 
     if getattr(request.state, 'direct', False):
         return await generate_direct_chat_completion(request, form_data, user=user, models=models)

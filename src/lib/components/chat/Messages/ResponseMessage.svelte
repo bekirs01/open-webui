@@ -669,7 +669,7 @@
 							<StatusHistory statusHistory={message?.statusHistory} />
 						{/if}
 
-						{#if message?.files && message.files?.filter((f) => f.type === 'image').length > 0}
+						{#if message?.files && message.files.length > 0}
 							<div
 								class="my-1 w-full flex overflow-x-auto gap-2 flex-wrap"
 								dir={$settings?.chatDirection ?? 'auto'}
@@ -677,7 +677,14 @@
 								{#each message.files as file}
 									<div>
 										{#if file.type === 'image' || (file?.content_type ?? '').startsWith('image/')}
-											<Image src={file.url} alt={message.content} />
+											<Image
+												src={file.url?.startsWith('data') ||
+												file.url?.startsWith('http') ||
+												file.url?.startsWith('/')
+													? file.url
+													: `${WEBUI_API_BASE_URL}/files/${file.url}${file?.content_type ? '/content' : ''}`}
+												alt={message.content}
+											/>
 										{:else}
 											<FileItem
 												item={file}

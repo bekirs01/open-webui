@@ -8,7 +8,15 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-Capability = Literal['text', 'code', 'vision', 'image_generation', 'audio_transcription', 'embedding']
+Capability = Literal[
+    'text',
+    'code',
+    'vision',
+    'image_generation',
+    'audio_transcription',
+    'embedding',
+    'export',
+]
 
 
 @dataclass
@@ -283,10 +291,20 @@ def should_inject_web_search_for_message(
     )
     if modality == 'image_generation':
         return False
+    if is_pure_image_draw_turn(message_text, attachments, input_mode):
+        return False
     if mode == 'never':
         return False
     if mode == 'always':
         return True
+
+    try:
+        from open_webui.utils.mws_gpt.export_intent import export_intent_blocks_web_search
+
+        if export_intent_blocks_web_search(message_text or ''):
+            return False
+    except Exception:
+        pass
 
     t_raw = message_text or ''
     t = t_raw.strip().lower()
@@ -360,6 +378,15 @@ def classify_task_modality(
     if input_mode and input_mode.lower() in ('voice', 'audio', 'call'):
         return 'text', 'input_mode_voice_or_audio'
 
+    t = _normalize_tr_keyboard_typos(message_text or '')
+    try:
+        from open_webui.utils.mws_gpt.export_intent import resolve_export_intent
+
+        if resolve_export_intent(t):
+            return 'export', 'export_conversion_intent'
+    except Exception:
+        pass
+
     if 'audio' in attachments:
         # Transcript is (or will be) user message text; same as plain text chat for routing.
         if (message_text or '').strip():
@@ -367,9 +394,14 @@ def classify_task_modality(
         return 'text', 'audio_attachment_use_text_model'
 
     if 'image' in attachments:
-        return 'vision', 'image_attachment'
+        try:
+            from open_webui.utils.mws_gpt.export_intent import resolve_export_intent
 
-    t = _normalize_tr_keyboard_typos(message_text or '')
+            if resolve_export_intent(t):
+                return 'export', 'export_with_image_attachment'
+        except Exception:
+            pass
+        return 'vision', 'image_attachment'
     # Önce görsel üretim: kod modeline düşmeden (ör. mesajda "python" geçse bile) çiz/üret niyeti yakalanır.
     if _wants_image_creation(t):
         return 'image_generation', 'image_creation_intent'
@@ -443,3 +475,35 @@ def classify_task_modality(
         return 'image_generation', 'image_intent_multilingual'
 
     return 'text', 'default_text'
+
+
+_EXPLAIN_WITH_IMAGE = re.compile(
+    r'\b(açıkla|açıklama|neden|niçin|explain|describe\s+how|instructions?|'
+    r've\s+yaz|and\s+explain|and\s+describe|why\s+does)\b',
+    re.I,
+)
+
+
+def wants_text_with_image_explanation(message_text: str) -> bool:
+    """User explicitly wants prose together with the image."""
+    return bool(_EXPLAIN_WITH_IMAGE.search(message_text or ''))
+
+
+def is_pure_image_draw_turn(
+    message_text: str,
+    attachments: set[str],
+    input_mode: str | None,
+) -> bool:
+    """
+    True when this turn should only run image generation (no web/RAG/text follow-up).
+    """
+    mod, _ = classify_task_modality(
+        message_text=message_text or '',
+        attachments=attachments,
+        input_mode=input_mode,
+    )
+    if mod != 'image_generation':
+        return False
+    if wants_text_with_image_explanation(message_text or ''):
+        return False
+    return True

@@ -13,7 +13,14 @@ from open_webui.utils.mws_gpt.registry import (
     collect_attachment_kinds,
     extract_last_user_text,
 )
+from open_webui.utils.mws_gpt.orchestrator import (
+    estimate_complexity,
+    orchestration_enabled,
+    pick_auto_text_by_complexity,
+)
+from open_webui.utils.mws_gpt.auto_workflow import build_auto_workflow
 from open_webui.utils.mws_gpt.team_registry import (
+    TEAM_ALLOWLIST,
     filter_team_available,
     pick_auto_target_model,
     team_allowlist_enabled,
@@ -38,6 +45,7 @@ def decide_mws_model(
     input_mode: str | None,
     openai_models: dict[str, dict[str, Any]],
     config: Any,
+    params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     If manual_model_id is Auto (auto or mws:auto), pick a real model from team rules + availability.
@@ -80,8 +88,43 @@ def decide_mws_model(
         input_mode=input_mode,
     )
 
-    pick, warn = pick_auto_target_model(modality, available)
-    warnings = [warn] if warn else []
+    px = params or {}
+    deep = bool(px.get('mws_deep_thinking'))
+
+    complexity: str | None = None
+    complexity_reason: str | None = None
+
+    if modality == 'text' and orchestration_enabled(config):
+        if deep:
+            complexity, complexity_reason = 'hard', 'mws_deep_thinking'
+            pick, warn = pick_auto_text_by_complexity(available, 'hard')
+        else:
+            complexity, complexity_reason = estimate_complexity(
+                message_text=message_text,
+                modality=modality,
+                attachments=attachments,
+            )
+            pick, warn = pick_auto_text_by_complexity(available, complexity)
+        warnings = [warn] if warn else []
+        log.info(
+            '[MWS] orchestration complexity=%s (%s) -> model=%s',
+            complexity,
+            complexity_reason,
+            pick,
+        )
+    elif modality == 'export' and orchestration_enabled(config):
+        complexity, complexity_reason = 'simple', 'export_turn'
+        pick, warn = pick_auto_text_by_complexity(available, 'simple')
+        warnings = [warn] if warn else []
+        log.info('[MWS] export turn -> text model=%s', pick)
+    elif modality == 'code' and orchestration_enabled(config) and deep:
+        complexity, complexity_reason = 'hard', 'mws_deep_thinking'
+        pick, warn = pick_auto_target_model(modality, available)
+        warnings = [warn] if warn else []
+        log.info('[MWS] deep thinking -> code model=%s', pick)
+    else:
+        pick, warn = pick_auto_target_model(modality, available)
+        warnings = [warn] if warn else []
 
     if not pick:
         # Last resort: text chain
@@ -109,6 +152,8 @@ def decide_mws_model(
         'reason': f'auto:{mod_reason}',
         'modality': modality,
         'warnings': [x for x in warnings if x],
+        'complexity': complexity,
+        'complexity_reason': complexity_reason,
     }
 
 
@@ -149,6 +194,7 @@ def resolve_mws_chat_model(
         input_mode=input_mode,
         openai_models=mws_models,
         config=config,
+        params=form_data.get('params') or {},
     )
 
     resolved = decision.get('model_id')
@@ -163,12 +209,29 @@ def resolve_mws_chat_model(
             'MWS Auto could not pick a model. Ensure MWS /models lists team models or set MWS_GPT_DEFAULT_TEXT_MODEL.'
         )
 
+    wf = build_auto_workflow(
+        decision={
+            **decision,
+            'model_id': resolved,
+        },
+        available=set(mws_models.keys()),
+        config=config,
+        message_text=text,
+        attachments=att,
+        params=form_data.get('params') or {},
+    )
     meta = {
         'resolved_model_id': resolved,
         'reason': decision.get('reason'),
         'modality': decision.get('modality'),
         'warnings': list(decision.get('warnings') or []),
         'original_requested_id': mid,
+        'orchestration': {
+            'mode': 'auto',
+            'complexity': decision.get('complexity'),
+            'complexity_reason': decision.get('complexity_reason'),
+            'workflow': wf,
+        },
     }
     log.info('[MWS] Auto -> %s (%s)', resolved, meta.get('reason'))
     return resolved, meta

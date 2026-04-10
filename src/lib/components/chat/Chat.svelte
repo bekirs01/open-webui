@@ -167,6 +167,7 @@
 
 	let imageGenerationEnabled = false;
 	let webSearchEnabled = false;
+	let deepThinkingEnabled = false;
 	let codeInterpreterEnabled = false;
 
 	let showCommands = false;
@@ -205,6 +206,7 @@
 		selectedToolIds = [];
 		selectedFilterIds = [];
 		webSearchEnabled = false;
+		deepThinkingEnabled = false;
 		imageGenerationEnabled = false;
 
 		const storageChatInput = sessionStorage.getItem(
@@ -235,6 +237,7 @@
 						selectedToolIds = input.selectedToolIds;
 						selectedFilterIds = input.selectedFilterIds;
 						webSearchEnabled = input.webSearchEnabled;
+						deepThinkingEnabled = input.deepThinkingEnabled ?? false;
 						imageGenerationEnabled = input.imageGenerationEnabled;
 						codeInterpreterEnabled = input.codeInterpreterEnabled;
 					}
@@ -296,6 +299,7 @@
 		selectedFilterIds = [];
 		pendingOAuthTools = [];
 		webSearchEnabled = false;
+		deepThinkingEnabled = false;
 		imageGenerationEnabled = false;
 		codeInterpreterEnabled = false;
 
@@ -758,6 +762,7 @@
 				selectedToolIds = [];
 				selectedFilterIds = [];
 				webSearchEnabled = false;
+				deepThinkingEnabled = false;
 				imageGenerationEnabled = false;
 				codeInterpreterEnabled = false;
 
@@ -770,6 +775,7 @@
 						selectedToolIds = input.selectedToolIds;
 						selectedFilterIds = input.selectedFilterIds;
 						webSearchEnabled = input.webSearchEnabled;
+						deepThinkingEnabled = input.deepThinkingEnabled ?? false;
 						imageGenerationEnabled = input.imageGenerationEnabled;
 						codeInterpreterEnabled = input.codeInterpreterEnabled;
 					}
@@ -2314,6 +2320,7 @@
 				params: {
 					...$settings?.params,
 					...params,
+					...(deepThinkingEnabled ? { mws_deep_thinking: true } : {}),
 					stop: getStopTokens()
 				},
 
@@ -2935,6 +2942,7 @@
 									bind:codeInterpreterEnabled
 									{pendingOAuthTools}
 									bind:webSearchEnabled
+									bind:deepThinkingEnabled
 									bind:atSelectedModel
 									bind:showCommands
 									bind:dragged
@@ -3018,6 +3026,7 @@
 									bind:imageGenerationEnabled
 									bind:codeInterpreterEnabled
 									bind:webSearchEnabled
+									bind:deepThinkingEnabled
 									bind:atSelectedModel
 									bind:showCommands
 									bind:dragged

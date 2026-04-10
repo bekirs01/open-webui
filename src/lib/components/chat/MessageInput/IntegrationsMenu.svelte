@@ -25,6 +25,7 @@
 	import GlobeAlt from '$lib/components/icons/GlobeAlt.svelte';
 	import Photo from '$lib/components/icons/Photo.svelte';
 	import Terminal from '$lib/components/icons/Terminal.svelte';
+	import LightBulb from '$lib/components/icons/LightBulb.svelte';
 	import ChevronRight from '$lib/components/icons/ChevronRight.svelte';
 	import ChevronLeft from '$lib/components/icons/ChevronLeft.svelte';
 
@@ -45,6 +46,8 @@
 	export let imageGenerationEnabled = false;
 	export let showCodeInterpreterButton = false;
 	export let codeInterpreterEnabled = false;
+	export let showDeepThinkingButton = false;
+	export let deepThinkingEnabled = false;
 
 	export let onShowValves: Function;
 	export let onClose: Function;
@@ -301,6 +304,40 @@
 								<div class=" shrink-0">
 									<Switch
 										state={codeInterpreterEnabled}
+										on:change={async (e) => {
+											const state = e.detail;
+											await tick();
+										}}
+									/>
+								</div>
+							</button>
+						</Tooltip>
+					{/if}
+
+					{#if showDeepThinkingButton}
+						<Tooltip
+							content="Stronger multi-step reasoning (MWS Auto); larger image size when generating images."
+							placement="top-start"
+						>
+							<button
+								class="flex w-full justify-between gap-2 items-center px-3 py-1.5 text-sm cursor-pointer rounded-xl hover:bg-gray-50 dark:hover:bg-gray-800/50"
+								on:click={() => {
+									deepThinkingEnabled = !deepThinkingEnabled;
+								}}
+							>
+								<div class="flex-1 truncate">
+									<div class="flex flex-1 gap-2 items-center">
+										<div class="shrink-0">
+											<LightBulb className="size-4" strokeWidth="1.5" />
+										</div>
+
+										<div class=" truncate">Deep thinking</div>
+									</div>
+								</div>
+
+								<div class=" shrink-0">
+									<Switch
+										state={deepThinkingEnabled}
 										on:change={async (e) => {
 											const state = e.detail;
 											await tick();

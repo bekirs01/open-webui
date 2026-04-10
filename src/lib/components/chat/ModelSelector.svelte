@@ -37,6 +37,34 @@
 		);
 	};
 
+	/** Aynı ailedeki modelleri (Qwen, Llama, …) seçicide tek başlık altında toplamak için sıralama anahtarı + etiket */
+	const inferModelFamily = (
+		model: Record<string, unknown>
+	): { key: string; label: string } => {
+		const metaFam = model?.info?.meta?.mws_model_family;
+		if (typeof metaFam === 'string' && metaFam.trim()) {
+			const k = metaFam.trim().toLowerCase().replace(/\s+/g, '-');
+			return { key: `meta-${k}`, label: metaFam.trim() };
+		}
+		const id = String(model?.id ?? '').toLowerCase();
+		if (id === 'auto' || id === 'mws:auto') return { key: '0-auto', label: 'Auto' };
+		if (id.includes('qwen') || id.includes('qwq')) return { key: '1-qwen', label: 'Qwen' };
+		if (id.includes('llama')) return { key: '2-llama', label: 'Llama' };
+		if (id.includes('gemma')) return { key: '3-gemma', label: 'Gemma' };
+		if (id.includes('deepseek')) return { key: '4-deepseek', label: 'DeepSeek' };
+		if (id.includes('gpt-oss')) return { key: '5-gpt-oss', label: 'GPT-OSS' };
+		if (id.includes('whisper')) return { key: '6-whisper', label: 'Whisper' };
+		if (id.includes('bge') || id.includes('embedding')) return { key: '7-embedding', label: 'Embedding' };
+		if (id.includes('qwen-image') || id.includes('flux') || id === 'dall-e' || id.includes('dall-e'))
+			return { key: '8-image', label: 'Image' };
+		if (id.includes('kimi')) return { key: '9-kimi', label: 'Kimi' };
+		if (id.includes('glm')) return { key: '10-glm', label: 'GLM' };
+		if (id.includes('cotype') || id.includes('moondream') || id.includes('llava'))
+			return { key: '11-vision', label: 'Vision' };
+		if (id.includes('mws-gpt') || id.includes('t-pro')) return { key: '12-mws', label: 'MWS' };
+		return { key: '99-other', label: 'Diğer' };
+	};
+
 	const saveDefaultModel = async () => {
 		const hasEmptyModel = selectedModels.filter((it) => it === '');
 		if (hasEmptyModel.length) {
@@ -83,16 +111,21 @@
 						placeholder={$i18n.t('Select a model')}
 						items={$models
 							.filter((model) => !(model?.info?.meta?.mws_embedding_only === true))
-							.map((model) => ({
-							value: model.id,
-							label:
-								model.id === 'auto' || model.id === 'mws:auto'
-									? `${model.name} (Auto)`
-									: isMwsTagged(model)
-										? `${model.name} · ${capabilityLabel(model)}`
-										: model.name,
-							model: model
-						}))}
+							.map((model) => {
+								const fam = inferModelFamily(model);
+								return {
+									value: model.id,
+									label:
+										model.id === 'auto' || model.id === 'mws:auto'
+											? `${model.name} (Auto)`
+											: isMwsTagged(model)
+												? `${model.name} · ${capabilityLabel(model)}`
+												: model.name,
+									model: model,
+									groupKey: fam.key,
+									groupLabel: fam.label
+								};
+							})}
 						{pinModelHandler}
 						bind:value={selectedModel}
 					/>

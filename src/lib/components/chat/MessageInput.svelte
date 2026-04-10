@@ -90,6 +90,7 @@
 	import Photo from '../icons/Photo.svelte';
 	import Wrench from '../icons/Wrench.svelte';
 	import Sparkles from '../icons/Sparkles.svelte';
+	import LightBulb from '../icons/LightBulb.svelte';
 
 	import InputVariablesModal from './MessageInput/InputVariablesModal.svelte';
 	import Voice from '../icons/Voice.svelte';
@@ -138,6 +139,7 @@
 
 	export let imageGenerationEnabled = false;
 	export let webSearchEnabled = false;
+	export let deepThinkingEnabled = false;
 	export let codeInterpreterEnabled = false;
 
 	export let pendingOAuthTools = [];
@@ -180,6 +182,7 @@
 		selectedFilterIds,
 		imageGenerationEnabled,
 		webSearchEnabled,
+		deepThinkingEnabled,
 		codeInterpreterEnabled
 	});
 
@@ -684,6 +687,11 @@
 			codeInterpreterCapableModels.length &&
 		$config?.features?.enable_code_interpreter &&
 		($_user.role === 'admin' || $_user?.permissions?.features?.code_interpreter);
+
+	let showDeepThinkingButton = false;
+	$: showDeepThinkingButton = (atSelectedModel?.id ? [atSelectedModel.id] : selectedModels).some(
+		Boolean
+	);
 
 	// Disable code interpreter when terminal is active (mutually exclusive)
 	$: if ($selectedTerminalId && codeInterpreterEnabled) {
@@ -1844,7 +1852,7 @@
 										</Tooltip>
 									{/if}
 
-									{#if showWebSearchButton || showImageGenerationButton || showCodeInterpreterButton || showToolsButton || (toggleFilters && toggleFilters.length > 0)}
+									{#if showWebSearchButton || showImageGenerationButton || showCodeInterpreterButton || showDeepThinkingButton || showToolsButton || (toggleFilters && toggleFilters.length > 0)}
 										<div
 											class="flex self-center w-[1px] h-4 mx-1 bg-gray-200/50 dark:bg-gray-800/50"
 										/>
@@ -1855,11 +1863,13 @@
 											{showWebSearchButton}
 											{showImageGenerationButton}
 											{showCodeInterpreterButton}
+											{showDeepThinkingButton}
 											bind:selectedToolIds
 											bind:selectedFilterIds
 											bind:webSearchEnabled
 											bind:imageGenerationEnabled
 											bind:codeInterpreterEnabled
+											bind:deepThinkingEnabled
 											closeOnOutsideClick={integrationsMenuCloseOnOutsideClick}
 											onShowValves={(e) => {
 												const { type, id } = e;
@@ -2019,6 +2029,25 @@
 												>
 													<Terminal className="size-3.5" strokeWidth="2" />
 
+													<div class="hidden group-hover:block">
+														<XMark className="size-4" strokeWidth="1.75" />
+													</div>
+												</button>
+											</Tooltip>
+										{/if}
+
+										{#if deepThinkingEnabled}
+											<Tooltip content="Deep thinking" placement="top">
+												<button
+													aria-label="Disable Deep thinking"
+													on:click|preventDefault={() =>
+														(deepThinkingEnabled = !deepThinkingEnabled)}
+													type="button"
+													class="group p-[7px] flex gap-1.5 items-center text-sm rounded-full transition-colors duration-300 focus:outline-hidden max-w-full overflow-hidden {deepThinkingEnabled
+														? ' text-sky-500 dark:text-sky-300 bg-sky-50 hover:bg-sky-100 dark:bg-sky-400/10 dark:hover:bg-sky-700/10 border border-sky-200/40 dark:border-sky-500/20'
+														: 'bg-transparent text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 '}"
+												>
+													<LightBulb className="size-4" strokeWidth="1.75" />
 													<div class="hidden group-hover:block">
 														<XMark className="size-4" strokeWidth="1.75" />
 													</div>
