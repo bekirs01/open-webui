@@ -143,7 +143,7 @@
 	}
 
 	$: mwsAutoRoutingHint =
-		selectedModels[0] === 'mws:auto' && history?.currentId
+		(selectedModels[0] === 'auto' || selectedModels[0] === 'mws:auto') && history?.currentId
 			? (() => {
 					let cur = history.currentId;
 					let steps = 0;

@@ -5,6 +5,7 @@ Merge MWS GPT OpenAI-compatible connection into global OpenAI API URL/key lists 
 from __future__ import annotations
 
 import logging
+import os
 from typing import TYPE_CHECKING
 
 from open_webui.utils.mws_gpt.active import is_mws_gpt_active
@@ -59,6 +60,33 @@ def merge_mws_gpt_openai_connection(app: 'FastAPI') -> None:
     if not cfg.ENABLE_OPENAI_API:
         cfg.ENABLE_OPENAI_API = True
         log.info('MWS GPT: ENABLE_OPENAI_API enabled.')
+
+    # Görsel üretimi (/v1/images/generations) ayrı config kullanır; MWS ile aynı uç noktayı senkronize et.
+    cfg.IMAGES_OPENAI_API_BASE_URL = base
+    cfg.IMAGES_OPENAI_API_KEY = key.strip()
+    if getattr(cfg, 'IMAGE_GENERATION_ENGINE', None) in (None, '', 'openai'):
+        cfg.IMAGE_GENERATION_ENGINE = 'openai'
+    cfg.ENABLE_IMAGE_GENERATION = True
+    img_default = (getattr(cfg, 'MWS_GPT_DEFAULT_IMAGE_MODEL', None) or '').strip()
+    if img_default:
+        cfg.IMAGE_GENERATION_MODEL = img_default
+    log.info('MWS GPT: IMAGES_OPENAI_* ve görsel motoru OpenAI uyumlu MWS ile hizalandı.')
+
+    # Web araması: motor boşsa duckduckgo (API anahtarı gerekmez). TAVILY vb. için env veya Admin.
+    if os.environ.get('MWS_ENABLE_WEB_SEARCH', 'true').lower() == 'true':
+        if not getattr(cfg, 'ENABLE_WEB_SEARCH', False):
+            cfg.ENABLE_WEB_SEARCH = True
+            log.info('MWS GPT: ENABLE_WEB_SEARCH açıldı (MWS_ENABLE_WEB_SEARCH=false ile kapatılabilir).')
+        override = os.environ.get('MWS_WEB_SEARCH_ENGINE', '').strip()
+        current = (getattr(cfg, 'WEB_SEARCH_ENGINE', None) or '').strip()
+        if override:
+            cfg.WEB_SEARCH_ENGINE = override
+            log.info('MWS GPT: WEB_SEARCH_ENGINE=%s (MWS_WEB_SEARCH_ENGINE)', override)
+        elif not current:
+            cfg.WEB_SEARCH_ENGINE = 'duckduckgo'
+            log.info(
+                'MWS GPT: WEB_SEARCH_ENGINE=duckduckgo (anahtarsız; Tavily için WEB_SEARCH_ENGINE=tavily + TAVILY_API_KEY)'
+            )
 
     log.info(
         'MWS GPT: merged OpenAI-compatible endpoint at index %s (tag=%s).',

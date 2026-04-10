@@ -1,5 +1,6 @@
 """
-MWS GPT auto-router and request resolution.
+MWS GPT auto-router: Auto is a mode (sentinel id `auto`), never sent upstream.
+Legacy `mws:auto` is accepted and normalized to the same behavior.
 """
 
 from __future__ import annotations
@@ -8,35 +9,25 @@ import logging
 from typing import Any
 
 from open_webui.utils.mws_gpt.registry import (
-    Capability,
-    build_mws_registry,
     classify_task_modality,
     collect_attachment_kinds,
     extract_last_user_text,
-    pick_fallback_model_id,
+)
+from open_webui.utils.mws_gpt.team_registry import (
+    filter_team_available,
+    pick_auto_target_model,
+    team_allowlist_enabled,
 )
 
 log = logging.getLogger(__name__)
 
+# UI + API sentinel: never forward to provider
+MWS_AUTO_ID = 'auto'
+LEGACY_AUTO_IDS = frozenset({'auto', 'mws:auto'})
 
-def _env_defaults_from_config(config: Any) -> dict[str, str | None]:
-    def g(name: str) -> str | None:
-        if not hasattr(config, name):
-            return None
-        v = getattr(config, name)
-        if v is None:
-            return None
-        s = str(v).strip()
-        return s if s else None
 
-    return {
-        'text': g('MWS_GPT_DEFAULT_TEXT_MODEL'),
-        'code': g('MWS_GPT_DEFAULT_CODE_MODEL'),
-        'vision': g('MWS_GPT_DEFAULT_VISION_MODEL'),
-        'image_generation': g('MWS_GPT_DEFAULT_IMAGE_MODEL'),
-        'audio_transcription': g('MWS_GPT_DEFAULT_AUDIO_MODEL'),
-        'embedding': g('MWS_GPT_DEFAULT_EMBEDDING_MODEL'),
-    }
+def _available_mws_model_ids(openai_models: dict[str, dict[str, Any]]) -> set[str]:
+    return {k for k in (openai_models or {}) if k}
 
 
 def decide_mws_model(
@@ -49,42 +40,38 @@ def decide_mws_model(
     config: Any,
 ) -> dict[str, Any]:
     """
-    Core auto-router. If manual_model_id is set and not the sentinel 'mws:auto',
-    returns that id with reason 'manual_override'.
-
-    openai_models: request.app.state.OPENAI_MODELS (id -> model dict with urlIdx, tags, ...).
+    If manual_model_id is Auto (auto or mws:auto), pick a real model from team rules + availability.
+    Otherwise manual override returns the same id (caller validates allowlist).
     """
-    if manual_model_id and manual_model_id != 'mws:auto':
+    mid = (manual_model_id or '').strip()
+    if mid not in LEGACY_AUTO_IDS:
         return {
-            'model_id': manual_model_id,
+            'model_id': mid or None,
             'reason': 'manual_override',
             'modality': None,
             'warnings': [],
         }
 
-    fetched = list(openai_models.values()) if openai_models else []
-    env_defaults = _env_defaults_from_config(config)
-    records, reg_warnings = build_mws_registry(fetched, {k: env_defaults.get(k) for k in env_defaults})
+    available = _available_mws_model_ids(openai_models)
+    if team_allowlist_enabled():
+        available = filter_team_available(available)
 
     if not getattr(config, 'MWS_GPT_AUTO_ROUTING', None) or not config.MWS_GPT_AUTO_ROUTING:
-        fid, w = pick_fallback_model_id(
-            records,
-            {k: env_defaults.get(k) for k in env_defaults},
-            'text',
-        )
-        warnings = list(reg_warnings)
-        if w:
-            warnings.append(w)
-        log.info(
-            '[MWS] auto-routing disabled; using text default model=%s warnings=%s',
-            fid,
-            warnings,
-        )
+        pick, w = pick_auto_target_model('text', available)
+        warnings = [w] if w else []
+        if not pick:
+            fb = (getattr(config, 'MWS_GPT_DEFAULT_TEXT_MODEL', None) or '').strip()
+            if fb and fb in available:
+                pick = fb
+            elif fb and (not team_allowlist_enabled() or fb in TEAM_ALLOWLIST):
+                pick = fb
+                warnings.append('MWS: auto-routing off; using MWS_GPT_DEFAULT_TEXT_MODEL.')
+        log.info('[MWS] auto-routing disabled; model=%s warnings=%s', pick, warnings)
         return {
-            'model_id': fid,
+            'model_id': pick,
             'reason': 'auto_disabled_use_text_default',
             'modality': 'text',
-            'warnings': warnings,
+            'warnings': [x for x in warnings if x],
         }
 
     modality, mod_reason = classify_task_modality(
@@ -93,29 +80,25 @@ def decide_mws_model(
         input_mode=input_mode,
     )
 
-    target: Capability = modality
-    # Map image_generation to image model env
-    pick, w = pick_fallback_model_id(
-        records,
-        {k: env_defaults.get(k) for k in env_defaults},
-        target,
-    )
-    warnings = list(reg_warnings)
-    if w:
-        warnings.append(w)
+    pick, warn = pick_auto_target_model(modality, available)
+    warnings = [warn] if warn else []
+
     if not pick:
-        pick, w2 = pick_fallback_model_id(
-            records,
-            {k: env_defaults.get(k) for k in env_defaults},
-            'text',
-        )
+        # Last resort: text chain
+        pick, w2 = pick_auto_target_model('text', available)
         if w2:
             warnings.append(w2)
-        log.warning('[MWS] no model for %s; fell back to text: %s', target, pick)
+        log.warning('[MWS] auto-route failed for %s; text fallback=%s', modality, pick)
+
+    if not pick:
+        fb = (getattr(config, 'MWS_GPT_DEFAULT_TEXT_MODEL', None) or '').strip()
+        if fb:
+            pick = fb
+            warnings.append('MWS: used MWS_GPT_DEFAULT_TEXT_MODEL as last resort.')
 
     log.info(
-        '[MWS] auto-route modality=%s (%s) -> model=%s warnings=%s',
-        target,
+        '[MWS] auto modality=%s (%s) -> model=%s warnings=%s',
+        modality,
         mod_reason,
         pick,
         warnings,
@@ -124,12 +107,9 @@ def decide_mws_model(
     return {
         'model_id': pick,
         'reason': f'auto:{mod_reason}',
-        'modality': target,
-        'warnings': warnings,
+        'modality': modality,
+        'warnings': [x for x in warnings if x],
     }
-
-
-MWS_AUTO_ID = 'mws:auto'
 
 
 def resolve_mws_chat_model(
@@ -137,7 +117,7 @@ def resolve_mws_chat_model(
     form_data: dict[str, Any],
 ) -> tuple[str, dict[str, Any] | None]:
     """
-    Replace mws:auto with a concrete OpenAI-model id. Returns (new_model_id, routing_meta_or_none).
+    Replace Auto sentinel with a real model id. Never returns auto/mws:auto.
     """
     from open_webui.utils.mws_gpt.active import is_mws_gpt_active
 
@@ -145,12 +125,11 @@ def resolve_mws_chat_model(
     if not is_mws_gpt_active(config):
         return form_data.get('model') or '', None
 
-    mid = form_data.get('model') or ''
-    if mid != MWS_AUTO_ID:
+    mid = (form_data.get('model') or '').strip()
+    if mid not in LEGACY_AUTO_IDS:
         return mid, None
 
     models = request.app.state.OPENAI_MODELS or {}
-    # Only route models that belong to MWS connection (tag 'mws' on connection)
     mws_models = {
         k: v
         for k, v in models.items()
@@ -173,18 +152,25 @@ def resolve_mws_chat_model(
     )
 
     resolved = decision.get('model_id')
+    fb = (getattr(config, 'MWS_GPT_DEFAULT_TEXT_MODEL', None) or '').strip()
+    if not resolved and fb:
+        resolved = fb
+        log.warning('[MWS] resolver empty; trying MWS_GPT_DEFAULT_TEXT_MODEL=%s', fb)
+
     if not resolved:
-        log.error('[MWS] auto-router returned empty model_id')
-        raise ValueError('MWS GPT: could not resolve a model for Auto mode. Check MWS env defaults and /models.')
+        log.error('[MWS] could not resolve Auto to any model')
+        raise ValueError(
+            'MWS Auto could not pick a model. Ensure MWS /models lists team models or set MWS_GPT_DEFAULT_TEXT_MODEL.'
+        )
 
     meta = {
         'resolved_model_id': resolved,
         'reason': decision.get('reason'),
         'modality': decision.get('modality'),
-        'warnings': decision.get('warnings') or [],
+        'warnings': list(decision.get('warnings') or []),
         'original_requested_id': mid,
     }
-    log.info('[MWS] resolved auto -> %s (%s)', resolved, meta.get('reason'))
+    log.info('[MWS] Auto -> %s (%s)', resolved, meta.get('reason'))
     return resolved, meta
 
 

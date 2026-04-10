@@ -1619,9 +1619,9 @@ async def get_models(request: Request, refresh: bool = False, user=Depends(get_v
     models = get_filtered_models(models, user)
 
     if is_mws_gpt_active(request.app.state.config):
-        from open_webui.utils.mws_gpt import MWS_AUTO_ID
+        from open_webui.utils.mws_gpt.router import LEGACY_AUTO_IDS, MWS_AUTO_ID
 
-        if not any(m.get('id') == MWS_AUTO_ID for m in models):
+        if not any(m.get('id') in LEGACY_AUTO_IDS for m in models):
             models.insert(
                 0,
                 {
@@ -1635,8 +1635,9 @@ async def get_models(request: Request, refresh: bool = False, user=Depends(get_v
                     'tags': [{'name': 'mws'}, {'name': 'auto'}],
                     'info': {
                         'meta': {
-                            'description': 'Pick the best MWS GPT model for each message (text, code, vision, …).',
+                            'description': 'Routing mode: chooses a real team model per message.',
                             'mws_auto': True,
+                            'mws_ui_label': 'Auto',
                         },
                     },
                 },
@@ -1694,9 +1695,17 @@ async def chat_completion(
     if not request.app.state.MODELS:
         await get_all_models(request, user=user)
 
-    from open_webui.utils.mws_gpt import MWS_AUTO_ID, resolve_mws_chat_model
+    from open_webui.utils.mws_gpt import resolve_mws_chat_model
+    from open_webui.utils.mws_gpt.router import LEGACY_AUTO_IDS
+    from open_webui.utils.mws_gpt.team_registry import (
+        TEAM_ALLOWLIST,
+        get_primary_capability,
+        team_allowlist_enabled,
+        validate_chat_model_selection,
+    )
 
-    if form_data.get('model') == MWS_AUTO_ID and not is_mws_gpt_active(request.app.state.config):
+    mid_req = (form_data.get('model') or '').strip()
+    if mid_req in LEGACY_AUTO_IDS and not is_mws_gpt_active(request.app.state.config):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail='MWS GPT is disabled (set MWS_GPT_API_BASE_URL and MWS_GPT_API_KEY, or MWS_GPT_ENABLED=true).',
@@ -1704,15 +1713,32 @@ async def chat_completion(
 
     request.state.mws_routing = None
     try:
-        if is_mws_gpt_active(request.app.state.config) and form_data.get('model') == MWS_AUTO_ID:
-            resolved_id, routing_meta = resolve_mws_chat_model(request, form_data)
-            if resolved_id:
-                form_data['model'] = resolved_id
-            request.state.mws_routing = routing_meta
+        if is_mws_gpt_active(request.app.state.config):
+            if mid_req in LEGACY_AUTO_IDS:
+                resolved_id, routing_meta = resolve_mws_chat_model(request, form_data)
+                if resolved_id:
+                    form_data['model'] = resolved_id
+                request.state.mws_routing = routing_meta
+            elif mid_req and team_allowlist_enabled() and request.app.state.MODELS:
+                mo = request.app.state.MODELS.get(mid_req) or {}
+                mws_tag = (getattr(request.app.state.config, 'MWS_GPT_TAG', None) or 'mws').strip() or 'mws'
+                tags = mo.get('tags') or []
+                is_mws = any(
+                    (isinstance(t, dict) and t.get('name') == mws_tag) or t == mws_tag for t in tags
+                )
+                if is_mws and mid_req not in TEAM_ALLOWLIST:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f'Model "{mid_req}" is not in the team allowlist.',
+                    )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
     model_id = form_data.get('model', None)
+    if is_mws_gpt_active(request.app.state.config) and model_id and get_primary_capability(model_id) is not None:
+        ok, err = validate_chat_model_selection(model_id, form_data)
+        if not ok:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=err)
     model_item = form_data.pop('model_item', {})
     tasks = form_data.pop('background_tasks', None)
 
