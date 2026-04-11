@@ -1508,11 +1508,19 @@ async def chat_web_search_handler(request: Request, form_data: dict, extra_param
         }
     )
 
+    max_queries = int(os.environ.get('CHAT_WEB_SEARCH_MAX_QUERIES', '3'))
+    queries = queries[: max(1, max_queries)]
+
+    pipeline_timeout = float(os.environ.get('CHAT_WEB_SEARCH_PIPELINE_TIMEOUT', '45'))
+
     try:
-        results = await process_web_search(
-            request,
-            SearchForm(queries=queries),
-            user=user,
+        results = await asyncio.wait_for(
+            process_web_search(
+                request,
+                SearchForm(queries=queries),
+                user=user,
+            ),
+            timeout=pipeline_timeout,
         )
 
         if results:
@@ -1569,6 +1577,23 @@ async def chat_web_search_handler(request: Request, form_data: dict, extra_param
                 }
             )
 
+    except asyncio.TimeoutError:
+        log.warning(
+            'process_web_search timed out after %ss (CHAT_WEB_SEARCH_PIPELINE_TIMEOUT); continuing without RAG web files',
+            pipeline_timeout,
+        )
+        await event_emitter(
+            {
+                'type': 'status',
+                'data': {
+                    'action': 'web_search',
+                    'description': 'Web search timed out; continuing with chat context only.',
+                    'queries': queries,
+                    'done': True,
+                    'error': False,
+                },
+            }
+        )
     except HTTPException as e:
         log.warning('web_search HTTP: %s', getattr(e, 'detail', e))
         await event_emitter(
@@ -2529,6 +2554,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             should_inject_web_search_for_message,
         )
         from open_webui.utils.mws_gpt.team_registry import get_primary_capability
+        from open_webui.utils.url_page_context import should_suppress_auto_web_search_after_url_injection
 
         mid = (model.get('id') or form_data.get('model') or '').strip()
         if form_data.get('_mws_image_pipeline') or (
@@ -2546,7 +2572,15 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             and os.environ.get('MWS_INJECT_WEB_SEARCH_FEATURE', 'true').lower() == 'true'
             and getattr(request.app.state.config, 'ENABLE_WEB_SEARCH', False)
         )
-        if _ws_ok and (
+        _suppress_ws_for_url = should_suppress_auto_web_search_after_url_injection(form_data, _last_user)
+        if _suppress_ws_for_url:
+            features['web_search'] = False
+            if os.environ.get('CHAT_URL_FETCH_DEBUG', '').lower() == 'true':
+                log.info(
+                    '[url-fetch] suppressed pipeline web_search (URL page context injected; '
+                    'set CHAT_URL_SUPPRESS_AUTO_WEB_SEARCH=false or ask for explicit web search to force)'
+                )
+        elif _ws_ok and (
             should_inject_web_search_for_message(
                 message_text=_last_user,
                 attachments=_att,

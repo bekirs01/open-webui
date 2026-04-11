@@ -11,7 +11,7 @@ import logging
 import os
 import re
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
@@ -62,6 +62,38 @@ CHAT_URL_FETCH_MAX_URLS = int(os.getenv('CHAT_URL_FETCH_MAX_URLS', '3'))
 CHAT_URL_FETCH_TIMEOUT = float(os.getenv('CHAT_URL_FETCH_TIMEOUT', '18'))
 CHAT_URL_FETCH_MAX_BYTES = int(os.getenv('CHAT_URL_FETCH_MAX_BYTES', str(2 * 1024 * 1024)))
 CHAT_URL_FETCH_MAX_TEXT_CHARS = int(os.getenv('CHAT_URL_FETCH_MAX_TEXT_CHARS', '14000'))
+CHAT_YOUTUBE_OEMBED_TIMEOUT = float(os.getenv('CHAT_YOUTUBE_OEMBED_TIMEOUT', '10'))
+
+# When True (default), do not run MWS forced multi-site web search if URL context was injected this turn.
+CHAT_URL_SUPPRESS_AUTO_WEB_SEARCH = os.getenv('CHAT_URL_SUPPRESS_AUTO_WEB_SEARCH', 'true').lower() == 'true'
+
+_EXPLICIT_BROAD_WEB_SEARCH_RE = re.compile(
+    r'(?:'
+    r'поиск\s+в\s+интернете|искать\s+в\s+интернете|найди\s+в\s+интернете|поищи\s+в\s+сети|'
+    r'погугли|погуглить|гугли|найди\s+ещ[ёе]\s+источник|дополнительн\w+\s+источник'
+    r'|search\s+the\s+web|search\s+online|google\s+it|look\s+up\s+online|'
+    r'find\s+more\s+sources|web\s+search|internet\s+search|browse\s+the\s+web'
+    r')',
+    re.IGNORECASE,
+)
+
+
+def explicit_broad_web_search_requested(message_text: str) -> bool:
+    """User explicitly asked for internet / multi-site search (do not confuse with pasting a URL)."""
+    if not (message_text or '').strip():
+        return False
+    return bool(_EXPLICIT_BROAD_WEB_SEARCH_RE.search(message_text))
+
+
+def should_suppress_auto_web_search_after_url_injection(form_data: dict, last_user_text: str) -> bool:
+    """If we injected URL page context, skip heavy pipeline web search unless user asked for it."""
+    if not CHAT_URL_SUPPRESS_AUTO_WEB_SEARCH:
+        return False
+    if not form_data.get('_chat_url_page_context_injected'):
+        return False
+    if explicit_broad_web_search_requested(last_user_text or ''):
+        return False
+    return True
 
 # Skip common non-document URLs
 _SKIP_HOST_SUFFIXES = (
@@ -205,6 +237,51 @@ def _is_youtube_host(host: str) -> bool:
     )
 
 
+async def _fetch_youtube_oembed(page_url: str) -> dict[str, Any] | None:
+    """
+    Fast path: YouTube oEmbed JSON (title + channel). Avoids downloading the full watch-page HTML.
+    """
+    api_url = f'https://www.youtube.com/oembed?url={quote(page_url, safe="")}&format=json'
+    headers = {
+        'User-Agent': 'OpenWebUI/ChatUrlFetch/1.0 (+https://github.com/open-webui/open-webui)',
+        'Accept': 'application/json',
+    }
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(CHAT_YOUTUBE_OEMBED_TIMEOUT),
+            follow_redirects=True,
+            limits=httpx.Limits(max_connections=5),
+        ) as client:
+            resp = await client.get(api_url, headers=headers)
+            if resp.status_code != 200:
+                if os.getenv('CHAT_URL_FETCH_DEBUG', '').lower() == 'true':
+                    log.info('[url-fetch] YouTube oEmbed HTTP %s for %s', resp.status_code, page_url)
+                return None
+            j = resp.json()
+    except Exception as e:
+        if os.getenv('CHAT_URL_FETCH_DEBUG', '').lower() == 'true':
+            log.info('[url-fetch] YouTube oEmbed error: %s', e)
+        return None
+    title = (j.get('title') or '').strip()
+    author = (j.get('author_name') or '').strip()
+    if not title and not author:
+        return None
+    text = (
+        'YouTube video metadata (oEmbed — no automatic transcript).\n'
+        f'**Title:** {title}\n'
+        f'**Channel:** {author}\n\n'
+        'Summarize what the video is likely about from the title and channel. '
+        'Full video audio/transcript is not available to this pipeline.'
+    )
+    return {
+        'url': page_url,
+        'title': title or '(YouTube)',
+        'text': text,
+        'error': None,
+        'youtube_oembed': True,
+    }
+
+
 async def _fetch_one(url: str) -> dict[str, Any]:
     out: dict[str, Any] = {'url': url, 'title': '', 'text': '', 'error': None}
 
@@ -222,6 +299,13 @@ async def _fetch_one(url: str) -> dict[str, Any]:
     if _SKIP_PATH_HINTS.search(parsed.path or ''):
         out['error'] = 'non_html_asset_skipped'
         return out
+
+    if _is_youtube_host(host):
+        oembed = await _fetch_youtube_oembed(url)
+        if oembed:
+            if os.getenv('CHAT_URL_FETCH_DEBUG', '').lower() == 'true':
+                log.info('[url-fetch] YouTube fast path (oEmbed) ok for %s', url)
+            return oembed
 
     headers = {
         'User-Agent': 'OpenWebUI/ChatUrlFetch/1.0 (+https://github.com/open-webui/open-webui)',
@@ -353,6 +437,7 @@ async def enrich_messages_with_url_pages(request: Request, form_data: dict) -> d
             break
 
     form_data['messages'] = messages
+    form_data['_chat_url_page_context_injected'] = True
     if debug:
         form_data['messages'] = add_or_update_system_message(
             '[URL_FETCH_DEBUG] URL page context was injected into the last user message.',
