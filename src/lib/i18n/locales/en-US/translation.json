@@ -1048,6 +1048,7 @@
 	"Keep improved prompt": "Keep",
 	"The model returned the same text.": "The model returned the same text.",
 	"Please wait before improving the prompt again.": "Please wait before improving the prompt again.",
+	"Enter at least two words to improve the prompt.": "Enter at least two words to improve the prompt.",
 	"Image Generation": "",
 	"Image Generation Engine": "",
 	"Image Max Compression Size": "",

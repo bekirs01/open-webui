@@ -1050,6 +1050,7 @@
 	"Keep improved prompt": "Оставить",
 	"The model returned the same text.": "Модель вернула тот же текст.",
 	"Please wait before improving the prompt again.": "Подождите перед следующим улучшением промпта.",
+	"Enter at least two words to improve the prompt.": "Введите минимум два слова, чтобы улучшить промпт.",
 	"Image Generation": "Генерация изображений",
 	"Image Generation Engine": "Механизм генерации изображений",
 	"Image Max Compression Size": "Максимальный размер сжатия изображения",

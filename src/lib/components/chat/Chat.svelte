@@ -1899,6 +1899,7 @@
 		if (isGenerating) {
 			if ($settings?.enableMessageQueue ?? true) {
 				// Enqueue the request
+				messageInput?.onPromptSubmitted?.(effectivePrompt);
 				const _files = structuredClone(files);
 				chatRequestQueues.update((q) => ({
 					...q,
@@ -1925,6 +1926,8 @@
 				return;
 			}
 		}
+
+		messageInput?.onPromptSubmitted?.(effectivePrompt);
 
 		messageInput?.setText('');
 		prompt = '';

@@ -61,7 +61,8 @@
 		PROMPT_IMPROVE_SYSTEM,
 		normalizePromptForCompare,
 		stripPromptImproveArtifacts,
-		enforceDraftScriptLanguage
+		enforceDraftScriptLanguage,
+		hasMinWordCountForPromptImprove
 	} from '$lib/utils/prompt-improve';
 	import { deleteFileById } from '$lib/apis/files';
 	import { getChatById } from '$lib/apis/chats';
@@ -435,6 +436,10 @@
 			toast.error($i18n.t('Empty message'));
 			return;
 		}
+		if (!hasMinWordCountForPromptImprove(draft, 2)) {
+			toast.error($i18n.t('Enter at least two words to improve the prompt.'));
+			return;
+		}
 
 		promptImproveBackup = draft;
 		promptImprovePhase = 'streaming';
@@ -448,11 +453,16 @@
 				model: modelId,
 				model_item: get(models).find((m) => m.id === modelId),
 				stream: true,
-				temperature: 0.55,
-				max_tokens: 2048,
+				// Tighter = faster + less drift from user's subjects (faithful rephrase, not invention)
+				temperature: 0.28,
+				// Hard cap keeps latency predictable; model must not "answer" with a long essay
+				max_tokens: 480,
 				messages: [
 					{ role: 'system', content: PROMPT_IMPROVE_SYSTEM },
-					{ role: 'user', content: draft }
+					{
+						role: 'user',
+						content: `Rewrite the text below into a clearer prompt for another AI. Output only the improved prompt — do not answer the question or write the final essay/report.\n\n---\n${draft}`
+					}
 				]
 			},
 			`${WEBUI_BASE_URL}/api`,
@@ -556,6 +566,15 @@
 		document.getElementById('chat-input')?.focus();
 	};
 
+	/** Parent calls this when the message is sent/queued so preview buttons disappear (same as Keep). */
+	export function onPromptSubmitted(sentText: string) {
+		if (promptImprovePhase !== 'preview') return;
+		promptImprovePhase = 'idle';
+		promptImproveBackup = '';
+		promptImproveAcceptBaseline = (sentText ?? '').trim() || null;
+		startPromptImproveCooldown();
+	}
+
 	let command = '';
 	export let showCommands = false;
 	$: showCommands =
@@ -606,6 +625,7 @@
 
 	$: promptImproveButtonDisabled =
 		!prompt?.trim() ||
+		!hasMinWordCountForPromptImprove(prompt ?? '', 2) ||
 		generating ||
 		promptImprovePhase === 'streaming' ||
 		promptImprovePhase === 'preview' ||
