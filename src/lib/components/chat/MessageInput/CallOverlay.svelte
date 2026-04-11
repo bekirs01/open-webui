@@ -1,6 +1,14 @@
 <script lang="ts">
-	import { config, models, settings, showCallOverlay, TTSWorker } from '$lib/stores';
+	import {
+		config,
+		models,
+		settings,
+		showCallOverlay,
+		TTSWorker,
+		voiceSessionPhase
+	} from '$lib/stores';
 	import { onMount, tick, getContext, onDestroy, createEventDispatcher } from 'svelte';
+	import { get } from 'svelte/store';
 
 	const dispatch = createEventDispatcher();
 
@@ -14,6 +22,19 @@
 	import VideoInputMenu from './CallOverlay/VideoInputMenu.svelte';
 	import { KokoroWorker } from '$lib/workers/KokoroWorker';
 	import { WEBUI_API_BASE_URL } from '$lib/constants';
+	import {
+		logVoiceSessionTransition,
+		VOICE_SILENCE_END_MS,
+		VOICE_MIN_SPEECH_MS,
+		VOICE_POST_TTS_MIC_DELAY_MS,
+		VOICE_TTS_SPEED_MULT,
+		VOICE_TTS_PLAYBACK_RATE_CAP,
+		VOICE_MIN_TRANSCRIPT_ALNUM,
+		VOICE_ECHO_WORD_OVERLAP_REJECT,
+		VOICE_DUP_TRANSCRIPT_WINDOW_MS,
+		type VoiceSessionState
+	} from '$lib/utils/voice-session-state';
+	import { validateVoiceTranscript, logTranscriptDecision } from '$lib/utils/voice-transcript-guard';
 
 	const i18n = getContext('i18n');
 
@@ -26,26 +47,108 @@
 
 	let wakeLock = null;
 
-	let model = null;
-
-	let loading = false;
-	let confirmed = false;
-	let interrupted = false;
-	let assistantSpeaking = false;
+	/** Single source of truth for overlay session (synced to voiceSessionPhase store). */
+	let voiceState: VoiceSessionState = 'idle';
 
 	let emoji = null;
 	let camera = false;
 	let cameraStream = null;
 
-	let chatStreaming = false;
 	let rmsLevel = 0;
 	let hasStartedSpeaking = false;
-	let mediaRecorder;
-	let audioStream = null;
-	let audioChunks = [];
+	let mediaRecorder: MediaRecorder | null = null;
+	let audioStream: MediaStream | null = null;
+	let audioChunks: Blob[] = [];
 
 	let videoInputDevices = [];
 	let selectedVideoInputDeviceId = null;
+
+	let sessionCleaned = false;
+
+	/** True while this overlay instance owns the voice session (guards stale async work after teardown). */
+	const isSessionActive = () => !sessionCleaned && get(showCallOverlay);
+
+	let vadRafId: number | null = null;
+	let vadAudioContext: AudioContext | null = null;
+
+	let voicesPollTimer: ReturnType<typeof setInterval> | null = null;
+	let wakeVisibilityHandler: (() => void) | null = null;
+
+	/** Confirms user finished a speech segment (silence detected). */
+	let segmentReady = false;
+
+	/** Invalidates in-flight HTMLAudio playback when user barges in. */
+	let playbackToken = 0;
+
+	let currentMessageId: string | null = null;
+	let currentUtterance: SpeechSynthesisUtterance | null = null;
+
+	let audioAbortController = new AbortController();
+
+	const audioCache = new Map();
+	const emojiCache = new Map();
+
+	let messages: Record<string, string[]> = {};
+	let finishedMessages: Record<string, boolean> = {};
+
+	/** Increments on each new STT attempt; stale completions must match latest. */
+	let sttGeneration = 0;
+
+	/** While false, TTS is playing or flushing — do not record mic data (reduces echo). */
+	let micCaptureEnabled = true;
+
+	/** Drop pending segment without transcribe (e.g. flush before TTS or short-noise reset). */
+	let dropSegmentOnStop = false;
+
+	/** If true, drop path must not call resumeListening (TTS about to play). */
+	let skipResumeAfterDrop = false;
+
+	/** Recent assistant text for echo rejection (normalized externally). */
+	let assistantEchoText = '';
+
+	let lastRejectedNormalized: string | null = null;
+	let lastRejectedAt = 0;
+	let lastSubmittedNormalized: string | null = null;
+	let lastSubmittedAt = 0;
+
+	const transcriptDebug = () =>
+		typeof localStorage !== 'undefined' && localStorage.getItem('VOICE_TRANSCRIPT_DEBUG') === '1';
+
+	const effectiveVoicePlaybackRate = () => {
+		const base = $settings.audio?.tts?.playbackRate ?? 1;
+		return Math.min(VOICE_TTS_PLAYBACK_RATE_CAP, base * VOICE_TTS_SPEED_MULT);
+	};
+
+	const flushMicForTtsPlayback = () => {
+		skipResumeAfterDrop = true;
+		micCaptureEnabled = false;
+		segmentReady = false;
+		hasStartedSpeaking = false;
+		audioChunks = [];
+		dropSegmentOnStop = true;
+		if (mediaRecorder && mediaRecorder.state === 'recording') {
+			mediaRecorder.stop();
+		} else {
+			dropSegmentOnStop = false;
+			skipResumeAfterDrop = false;
+		}
+	};
+
+	const setPhase = (next: VoiceSessionState, reason?: string) => {
+		if (sessionCleaned && next !== 'stopped') return;
+		const prev = voiceState;
+		if (prev === next) return;
+		logVoiceSessionTransition(prev, next, reason);
+		voiceState = next;
+		voiceSessionPhase.set(next);
+	};
+
+	const clearVoicesPoll = () => {
+		if (voicesPollTimer !== null) {
+			clearInterval(voicesPollTimer);
+			voicesPollTimer = null;
+		}
+	};
 
 	const getVideoInputDevices = async () => {
 		const devices = await navigator.mediaDevices.enumerateDevices();
@@ -82,7 +185,7 @@
 	};
 
 	const startVideoStream = async () => {
-		const video = document.getElementById('camera-feed');
+		const video = document.getElementById('camera-feed') as HTMLVideoElement | null;
 		if (video) {
 			if (selectedVideoInputDeviceId === 'screen') {
 				cameraStream = await navigator.mediaDevices.getDisplayMedia({
@@ -117,23 +220,20 @@
 	};
 
 	const takeScreenshot = () => {
-		const video = document.getElementById('camera-feed');
-		const canvas = document.getElementById('camera-canvas');
+		const video = document.getElementById('camera-feed') as HTMLVideoElement | null;
+		const canvas = document.getElementById('camera-canvas') as HTMLCanvasElement | null;
 
-		if (!canvas) {
+		if (!canvas || !video) {
 			return;
 		}
 
 		const context = canvas.getContext('2d');
 
-		// Make the canvas match the video dimensions
 		canvas.width = video.videoWidth;
 		canvas.height = video.videoHeight;
 
-		// Draw the image from the video onto the canvas
 		context.drawImage(video, 0, 0, video.videoWidth, video.videoHeight);
 
-		// Convert the canvas to a data base64 URL and console log it
 		const dataURL = canvas.toDataURL('image/png');
 		console.log(dataURL);
 
@@ -146,13 +246,15 @@
 	};
 
 	const MIN_DECIBELS = -55;
-	const VISUALIZER_BUFFER_LENGTH = 300;
 
-	const transcribeHandler = async (audioBlob) => {
-		// Create a blob from the audio chunks
-
+	const transcribeHandler = async (audioBlob: Blob) => {
+		const myGen = ++sttGeneration;
 		await tick();
+		if (!isSessionActive()) return;
+
 		const file = blobToFile(audioBlob, 'recording.wav');
+
+		setPhase('transcribing', 'stt');
 
 		const res = await transcribeAudio(
 			localStorage.token,
@@ -160,35 +262,94 @@
 			$settings?.audio?.stt?.language
 		).catch((error) => {
 			toast.error(`${error}`);
+			setPhase('error', 'stt-failed');
 			return null;
 		});
 
-		if (res) {
-			console.log(res.text);
+		if (!isSessionActive()) return;
 
-			if (res.text !== '') {
-				const _responses = await submitPrompt(res.text, { _raw: true });
-				console.log(_responses);
-			}
+		if (myGen !== sttGeneration) {
+			logTranscriptDecision(transcriptDebug(), {
+				raw: '',
+				result: { ok: false, reason: 'stale_stt_generation', normalized: '' },
+				sttGeneration,
+				capturedGeneration: myGen
+			});
+			return;
 		}
+
+		if (!res) {
+			setPhase('listening', 'stt-error-recover');
+			return;
+		}
+
+		const rawText = res.text ?? '';
+		const now = Date.now();
+
+		const validation = validateVoiceTranscript({
+			raw: rawText,
+			minAlnumChars: VOICE_MIN_TRANSCRIPT_ALNUM,
+			minWordOverlapToRejectEcho: VOICE_ECHO_WORD_OVERLAP_REJECT,
+			assistantEchoText,
+			lastRejectedNormalized,
+			lastSubmittedNormalized,
+			dupWindowMs: VOICE_DUP_TRANSCRIPT_WINDOW_MS,
+			now,
+			lastRejectedAt,
+			lastSubmittedAt
+		});
+
+		logTranscriptDecision(transcriptDebug(), {
+			raw: rawText,
+			result: validation,
+			sttGeneration,
+			capturedGeneration: myGen
+		});
+
+		if (!validation.ok) {
+			lastRejectedNormalized = validation.normalized;
+			lastRejectedAt = now;
+			setPhase('listening', `reject:${validation.reason}`);
+			return;
+		}
+
+		const text = rawText.replace(/\s+/g, ' ').trim();
+
+		setPhase('waiting_llm', 'submit');
+		lastSubmittedNormalized = validation.normalized;
+		lastSubmittedAt = now;
+
+		// Do not await: submitPrompt blocks until the full stream completes; we need the mic back immediately.
+		Promise.resolve(submitPrompt(text, { _raw: true })).catch((e) => {
+			if (!isSessionActive()) return;
+			console.error(e);
+			toast.error(`${e}`);
+			setPhase('error', 'submit-failed');
+			void resumeListeningPipeline('submit-error');
+		});
 	};
 
 	const stopRecordingCallback = async (_continue = true) => {
-		if ($showCallOverlay) {
-			console.log('%c%s', 'color: red; font-size: 20px;', '🚨 stopRecordingCallback 🚨');
-
-			// deep copy the audioChunks array
-			const _audioChunks = audioChunks.slice(0);
-
+		if (dropSegmentOnStop) {
+			dropSegmentOnStop = false;
+			const skipResume = skipResumeAfterDrop;
+			skipResumeAfterDrop = false;
 			audioChunks = [];
-			mediaRecorder = false;
-
-			if (_continue) {
-				startRecording();
+			segmentReady = false;
+			hasStartedSpeaking = false;
+			mediaRecorder = null;
+			if (!skipResume && _continue && isSessionActive() && voiceState !== 'stopped') {
+				await resumeListeningPipeline('drop-segment');
 			}
+			return;
+		}
 
-			if (confirmed) {
-				loading = true;
+		if (get(showCallOverlay) && !sessionCleaned) {
+			const _audioChunks = audioChunks.slice(0);
+			audioChunks = [];
+			mediaRecorder = null;
+
+			if (segmentReady) {
 				emoji = null;
 
 				if (cameraStream) {
@@ -203,14 +364,16 @@
 				}
 
 				const audioBlob = new Blob(_audioChunks, { type: 'audio/wav' });
+				segmentReady = false;
 				await transcribeHandler(audioBlob);
+			}
 
-				confirmed = false;
-				loading = false;
+			if (_continue && isSessionActive() && voiceState !== 'stopped') {
+				await resumeListeningPipeline('stop-callback-continue');
 			}
 		} else {
 			audioChunks = [];
-			mediaRecorder = false;
+			mediaRecorder = null;
 
 			if (audioStream) {
 				const tracks = audioStream.getTracks();
@@ -220,47 +383,86 @@
 		}
 	};
 
-	const startRecording = async () => {
-		if ($showCallOverlay) {
-			if (!audioStream) {
-				audioStream = await navigator.mediaDevices.getUserMedia({
-					audio: {
-						echoCancellation: true,
-						noiseSuppression: true,
-						autoGainControl: true
-					}
-				});
-			}
-			mediaRecorder = new MediaRecorder(audioStream);
-
-			mediaRecorder.onstart = () => {
-				console.log('Recording started');
-				audioChunks = [];
-			};
-
-			mediaRecorder.ondataavailable = (event) => {
-				if (hasStartedSpeaking) {
-					audioChunks.push(event.data);
-				}
-			};
-
-			mediaRecorder.onstop = (e) => {
-				console.log('Recording stopped', audioStream, e);
-				stopRecordingCallback();
-			};
-
-			analyseAudio(audioStream);
+	const cancelVadLoop = () => {
+		if (vadRafId !== null) {
+			cancelAnimationFrame(vadRafId);
+			vadRafId = null;
 		}
 	};
 
+	const resumeListeningPipeline = async (reason?: string) => {
+		if (!isSessionActive() || voiceState === 'stopped') {
+			return;
+		}
+		micCaptureEnabled = true;
+		setPhase('listening', reason ?? 'resume-listening');
+		await tick();
+		if (!isSessionActive()) return;
+		if (reason?.includes('after-tts')) {
+			await new Promise((r) => setTimeout(r, VOICE_POST_TTS_MIC_DELAY_MS));
+			if (!isSessionActive()) return;
+		}
+		await startRecording();
+	};
+
+	const startRecording = async () => {
+		if (!isSessionActive() || voiceState === 'stopped') {
+			return;
+		}
+		micCaptureEnabled = true;
+
+		if (mediaRecorder && mediaRecorder.state === 'recording') {
+			return;
+		}
+
+		if (!audioStream) {
+			audioStream = await navigator.mediaDevices.getUserMedia({
+				audio: {
+					echoCancellation: true,
+					noiseSuppression: true,
+					autoGainControl: true
+				}
+			});
+		}
+
+		mediaRecorder = new MediaRecorder(audioStream);
+
+		mediaRecorder.onstart = () => {
+			audioChunks = [];
+		};
+
+		mediaRecorder.ondataavailable = (event) => {
+			if (micCaptureEnabled && hasStartedSpeaking) {
+				audioChunks.push(event.data);
+			}
+		};
+
+		mediaRecorder.onstop = () => {
+			stopRecordingCallback();
+		};
+
+		analyseAudio(audioStream);
+	};
+
 	const stopAudioStream = async () => {
+		cancelVadLoop();
+
 		try {
-			if (mediaRecorder) {
+			if (mediaRecorder && mediaRecorder.state !== 'inactive') {
 				mediaRecorder.stop();
 			}
 		} catch (error) {
 			console.log('Error stopping audio stream:', error);
 		}
+
+		mediaRecorder = null;
+
+		try {
+			await vadAudioContext?.close();
+		} catch {
+			// ignore
+		}
+		vadAudioContext = null;
 
 		if (!audioStream) return;
 
@@ -271,21 +473,34 @@
 		audioStream = null;
 	};
 
-	// Function to calculate the RMS level from time domain data
 	const calculateRMS = (data: Uint8Array) => {
 		let sumSquares = 0;
 		for (let i = 0; i < data.length; i++) {
-			const normalizedValue = (data[i] - 128) / 128; // Normalize the data
+			const normalizedValue = (data[i] - 128) / 128;
 			sumSquares += normalizedValue * normalizedValue;
 		}
 		return Math.sqrt(sumSquares / data.length);
 	};
 
-	const analyseAudio = (stream) => {
-		const audioContext = new AudioContext();
-		const audioStreamSource = audioContext.createMediaStreamSource(stream);
+	const shouldRunVad = () => {
+		if (!get(showCallOverlay) || sessionCleaned || voiceState === 'stopped') return false;
+		if (voiceState === 'listening' || voiceState === 'interrupted') return true;
+		if (voiceState === 'speaking') return true;
+		if (voiceState === 'waiting_llm' || voiceState === 'transcribing') return true;
+		return false;
+	};
 
-		const analyser = audioContext.createAnalyser();
+	const analyseAudio = (stream: MediaStream) => {
+		cancelVadLoop();
+		try {
+			void vadAudioContext?.close();
+		} catch {
+			// ignore
+		}
+		vadAudioContext = new AudioContext();
+		const audioStreamSource = vadAudioContext.createMediaStreamSource(stream);
+
+		const analyser = vadAudioContext.createAnalyser();
 		analyser.minDecibels = MIN_DECIBELS;
 		audioStreamSource.connect(analyser);
 
@@ -295,18 +510,26 @@
 		const timeDomainData = new Uint8Array(analyser.fftSize);
 
 		let lastSoundTime = Date.now();
+		let speechStartAt: number | null = null;
 		hasStartedSpeaking = false;
-
-		console.log('🔊 Sound detection started', lastSoundTime, hasStartedSpeaking);
 
 		const detectSound = () => {
 			const processFrame = () => {
-				if (!mediaRecorder || !$showCallOverlay) {
+				if (!mediaRecorder || !get(showCallOverlay) || sessionCleaned) {
 					return;
 				}
 
-				if (assistantSpeaking && !($settings?.voiceInterruption ?? false)) {
-					// Mute the audio if the assistant is speaking
+				if (!shouldRunVad()) {
+					if (voiceState === 'error') {
+						return;
+					}
+					vadRafId = requestAnimationFrame(processFrame);
+					return;
+				}
+
+				const isSpeakingPhase = voiceState === 'speaking';
+
+				if (isSpeakingPhase && ($settings?.voiceInterruption ?? true) === false) {
 					analyser.maxDecibels = 0;
 					analyser.minDecibels = -1;
 				} else {
@@ -317,162 +540,207 @@
 				analyser.getByteTimeDomainData(timeDomainData);
 				analyser.getByteFrequencyData(domainData);
 
-				// Calculate RMS level from time domain data
 				rmsLevel = calculateRMS(timeDomainData);
 
-				// Check if initial speech/noise has started
 				const hasSound = domainData.some((value) => value > 0);
 				if (hasSound) {
-					// BIG RED TEXT
-					console.log('%c%s', 'color: red; font-size: 20px;', '🔊 Sound detected');
-					if (mediaRecorder && mediaRecorder.state !== 'recording') {
+					if (micCaptureEnabled && mediaRecorder && mediaRecorder.state !== 'recording') {
 						mediaRecorder.start();
 					}
 
 					if (!hasStartedSpeaking) {
 						hasStartedSpeaking = true;
-						stopAllAudio();
+						speechStartAt = Date.now();
+						if (isSpeakingPhase) {
+							void interruptAssistantPlayback('user-speech-during-tts');
+						}
 					}
 
 					lastSoundTime = Date.now();
 				}
 
-				// Start silence detection only after initial speech/noise has been detected
-				if (hasStartedSpeaking) {
-					if (Date.now() - lastSoundTime > 2000) {
-						confirmed = true;
+				if (hasStartedSpeaking && speechStartAt !== null) {
+					if (Date.now() - lastSoundTime > VOICE_SILENCE_END_MS) {
+						const activeSpan = lastSoundTime - speechStartAt;
+						if (activeSpan < VOICE_MIN_SPEECH_MS) {
+							hasStartedSpeaking = false;
+							speechStartAt = null;
+							segmentReady = false;
+							if (mediaRecorder && mediaRecorder.state === 'recording') {
+								dropSegmentOnStop = true;
+								skipResumeAfterDrop = false;
+								mediaRecorder.stop();
+							}
+							vadRafId = requestAnimationFrame(processFrame);
+							return;
+						}
 
-						if (mediaRecorder) {
-							console.log('%c%s', 'color: red; font-size: 20px;', '🔇 Silence detected');
+						segmentReady = true;
+
+						if (mediaRecorder && mediaRecorder.state === 'recording') {
 							mediaRecorder.stop();
 							return;
 						}
 					}
 				}
 
-				window.requestAnimationFrame(processFrame);
+				vadRafId = requestAnimationFrame(processFrame);
 			};
 
-			window.requestAnimationFrame(processFrame);
+			vadRafId = requestAnimationFrame(processFrame);
 		};
 
 		detectSound();
 	};
 
-	let finishedMessages = {};
-	let currentMessageId = null;
-	let currentUtterance = null;
-
-	// Get voice: model-specific > user settings > config default
 	const getVoiceId = () => {
-		// Check for model-specific TTS voice first
 		if (model?.info?.meta?.tts?.voice) {
 			return model.info.meta.tts.voice;
 		}
-		// Fall back to user settings or config default
 		if ($settings?.audio?.tts?.defaultVoice === $config.audio.tts.voice) {
 			return $settings?.audio?.tts?.voice ?? $config?.audio?.tts?.voice;
 		}
 		return $config?.audio?.tts?.voice;
 	};
 
-	const speakSpeechSynthesisHandler = (content) => {
-		if ($showCallOverlay) {
-			return new Promise((resolve) => {
-				let voices = [];
-				const getVoicesLoop = setInterval(async () => {
-					voices = await speechSynthesis.getVoices();
-					if (voices.length > 0) {
-						clearInterval(getVoicesLoop);
-
-						const voiceId = getVoiceId();
-						const voice = voices?.filter((v) => v.voiceURI === voiceId)?.at(0) ?? undefined;
-
-						currentUtterance = new SpeechSynthesisUtterance(content);
-						currentUtterance.rate = $settings.audio?.tts?.playbackRate ?? 1;
-
-						if (voice) {
-							currentUtterance.voice = voice;
-						}
-
-						speechSynthesis.speak(currentUtterance);
-						currentUtterance.onend = async (e) => {
-							await new Promise((r) => setTimeout(r, 200));
-							resolve(e);
-						};
-					}
-				}, 100);
-			});
-		} else {
+	const speakSpeechSynthesisHandler = (content: string) => {
+		if (!isSessionActive()) {
 			return Promise.resolve();
 		}
-	};
+		clearVoicesPoll();
+		const utterToken = ++playbackToken;
 
-	const playAudio = (audio) => {
-		if ($showCallOverlay) {
-			return new Promise((resolve) => {
-				const audioElement = document.getElementById('audioElement') as HTMLAudioElement;
+		return new Promise<void>((resolve) => {
+			let voices: SpeechSynthesisVoice[] = [];
+			voicesPollTimer = setInterval(async () => {
+				voices = await speechSynthesis.getVoices();
+				if (voices.length > 0) {
+					clearVoicesPoll();
 
-				if (audioElement) {
-					audioElement.src = audio.src;
-					audioElement.muted = true;
-					audioElement.playbackRate = $settings.audio?.tts?.playbackRate ?? 1;
+					if (utterToken !== playbackToken || !isSessionActive()) {
+						resolve();
+						return;
+					}
 
-					audioElement
-						.play()
-						.then(() => {
-							audioElement.muted = false;
-						})
-						.catch((error) => {
-							console.error(error);
-						});
+					const voiceId = getVoiceId();
+					const voice = voices?.filter((v) => v.voiceURI === voiceId)?.at(0) ?? undefined;
 
-					audioElement.onended = async (e) => {
-						await new Promise((r) => setTimeout(r, 100));
-						resolve(e);
+					currentUtterance = new SpeechSynthesisUtterance(content);
+					currentUtterance.rate = effectiveVoicePlaybackRate();
+
+					if (voice) {
+						currentUtterance.voice = voice;
+					}
+
+					speechSynthesis.speak(currentUtterance);
+					currentUtterance.onend = async () => {
+						if (utterToken !== playbackToken || !isSessionActive()) {
+							resolve();
+							return;
+						}
+						await new Promise((r) => setTimeout(r, 200));
+						resolve();
 					};
 				}
-			});
-		} else {
-			return Promise.resolve();
-		}
+			}, 100);
+		});
 	};
 
-	const stopAllAudio = async () => {
-		assistantSpeaking = false;
-		interrupted = true;
+	const playAudio = (audio: HTMLAudioElement) => {
+		if (!isSessionActive()) {
+			return Promise.resolve();
+		}
+		const playTokenLocal = ++playbackToken;
 
-		if (chatStreaming) {
-			stopResponse();
+		return new Promise<void>((resolve) => {
+			const audioElement = document.getElementById('audioElement') as HTMLAudioElement | null;
+
+			if (!audioElement) {
+				resolve();
+				return;
+			}
+
+			audioElement.src = audio.src;
+			audioElement.muted = true;
+			audioElement.playbackRate = effectiveVoicePlaybackRate();
+
+			audioElement
+				.play()
+				.then(() => {
+					if (playTokenLocal === playbackToken) {
+						audioElement.muted = false;
+					}
+				})
+				.catch((error) => {
+					console.error(error);
+				});
+
+			audioElement.onended = async () => {
+				if (playTokenLocal !== playbackToken || !isSessionActive()) {
+					resolve();
+					return;
+				}
+				await new Promise((r) => setTimeout(r, 100));
+				resolve();
+			};
+		});
+	};
+
+	const interruptAssistantPlayback = async (reason?: string) => {
+		if (!isSessionActive()) return;
+		setPhase('interrupted', reason ?? 'interrupt');
+		playbackToken++;
+		clearVoicesPoll();
+
+		audioAbortController.abort();
+
+		if (currentMessageId && messages[currentMessageId]) {
+			messages[currentMessageId] = [];
 		}
 
-		if (currentUtterance) {
+		try {
 			speechSynthesis.cancel();
-			currentUtterance = null;
+		} catch {
+			// ignore
 		}
+		currentUtterance = null;
 
-		const audioElement = document.getElementById('audioElement');
+		const audioElement = document.getElementById('audioElement') as HTMLAudioElement | null;
 		if (audioElement) {
 			audioElement.muted = true;
 			audioElement.pause();
 			audioElement.currentTime = 0;
+			audioElement.onended = null;
+		}
+
+		if ($settings?.voiceInterruption !== false) {
+			try {
+				stopResponse();
+			} catch {
+				// ignore
+			}
+		}
+
+		await tick();
+		if (!isSessionActive()) return;
+		setPhase('listening', 'post-interrupt');
+		if (!mediaRecorder || mediaRecorder.state === 'inactive') {
+			await resumeListeningPipeline('barge-in');
 		}
 	};
 
-	let audioAbortController = new AbortController();
+	const stopAllAudio = async () => {
+		await interruptAssistantPlayback('tap-stop');
+	};
 
-	// Audio cache map where key is the content and value is the Audio object.
-	const audioCache = new Map();
-	const emojiCache = new Map();
-
-	const fetchAudio = async (content) => {
+	const fetchAudio = async (content: string) => {
 		if (!audioCache.has(content)) {
 			try {
-				// Set the emoji for the content if needed
 				if ($settings?.showEmojiInCall ?? false) {
-					const emoji = await generateEmoji(localStorage.token, modelId, content, chatId);
-					if (emoji) {
-						emojiCache.set(content, emoji);
+					const emojiRes = await generateEmoji(localStorage.token, modelId, content, chatId);
+					if (!isSessionActive()) return;
+					if (emojiRes) {
+						emojiCache.set(content, emojiRes);
 					}
 				}
 
@@ -487,6 +755,7 @@
 							toast.error(`${error}`);
 						});
 
+					if (!isSessionActive()) return;
 					if (url) {
 						audioCache.set(content, new Audio(url));
 					}
@@ -498,12 +767,14 @@
 						}
 					);
 
+					if (!isSessionActive()) return;
 					if (res) {
 						const blob = await res.blob();
 						const blobUrl = URL.createObjectURL(blob);
 						audioCache.set(content, new Audio(blobUrl));
 					}
 				} else {
+					if (!isSessionActive()) return;
 					audioCache.set(content, true);
 				}
 			} catch (error) {
@@ -511,101 +782,105 @@
 			}
 		}
 
+		if (!isSessionActive()) return;
 		return audioCache.get(content);
 	};
 
-	let messages = {};
+	const monitorAndPlayAudio = async (id: string, signal: AbortSignal) => {
+		let normalExit = false;
 
-	const monitorAndPlayAudio = async (id, signal) => {
-		while (!signal.aborted) {
-			if (messages[id] && messages[id].length > 0) {
-				// Retrieve the next content string from the queue
-				const content = messages[id].shift(); // Dequeues the content for playing
+		try {
+			while (!signal.aborted) {
+				if (voiceState === 'stopped' || !get(showCallOverlay) || sessionCleaned) {
+					break;
+				}
 
-				if (audioCache.has(content)) {
-					// If content is available in the cache, play it
+				if (messages[id] && messages[id].length > 0) {
+					const content = messages[id].shift();
 
-					// Set the emoji for the content if available
-					if (($settings?.showEmojiInCall ?? false) && emojiCache.has(content)) {
-						emoji = emojiCache.get(content);
-					} else {
-						emoji = null;
-					}
+					if (audioCache.has(content)) {
+						if (($settings?.showEmojiInCall ?? false) && emojiCache.has(content)) {
+							emoji = emojiCache.get(content);
+						} else {
+							emoji = null;
+						}
 
-					if ($config.audio.tts.engine !== '') {
-						try {
-							console.log(
-								'%c%s',
-								'color: red; font-size: 20px;',
-								`Playing audio for content: ${content}`
-							);
-
-							const audio = audioCache.get(content);
-							await playAudio(audio); // Here ensure that playAudio is indeed correct method to execute
-							console.log(`Played audio for content: ${content}`);
-							await new Promise((resolve) => setTimeout(resolve, 200)); // Wait before retrying to reduce tight loop
-						} catch (error) {
-							console.error('Error playing audio:', error);
+						if ($config.audio.tts.engine !== '') {
+							try {
+								const audio = audioCache.get(content) as HTMLAudioElement;
+								flushMicForTtsPlayback();
+								setPhase('speaking', 'play-chunk');
+								await playAudio(audio);
+								if (!isSessionActive() || signal.aborted) break;
+								await new Promise((resolve) => setTimeout(resolve, 200));
+							} catch (error) {
+								console.error('Error playing audio:', error);
+							}
+						} else {
+							flushMicForTtsPlayback();
+							setPhase('speaking', 'speak-chunk');
+							await speakSpeechSynthesisHandler(content);
+							if (!isSessionActive() || signal.aborted) break;
 						}
 					} else {
-						await speakSpeechSynthesisHandler(content);
+						messages[id].unshift(content);
+						await new Promise((resolve) => setTimeout(resolve, 200));
 					}
+				} else if (finishedMessages[id] && messages[id] && messages[id].length === 0) {
+					normalExit = true;
+					break;
 				} else {
-					// If not available in the cache, push it back to the queue and delay
-					messages[id].unshift(content); // Re-queue the content at the start
-					console.log(`Audio for "${content}" not yet available in the cache, re-queued...`);
-					await new Promise((resolve) => setTimeout(resolve, 200)); // Wait before retrying to reduce tight loop
+					await new Promise((resolve) => setTimeout(resolve, 200));
 				}
-			} else if (finishedMessages[id] && messages[id] && messages[id].length === 0) {
-				// If the message is finished and there are no more messages to process, break the loop
-				assistantSpeaking = false;
-				break;
-			} else {
-				// No messages to process, sleep for a bit
-				await new Promise((resolve) => setTimeout(resolve, 200));
 			}
+		} finally {
+			if (
+				normalExit &&
+				!signal.aborted &&
+				isSessionActive() &&
+				voiceState !== 'stopped'
+			) {
+				setPhase('listening', 'assistant-done');
+				await resumeListeningPipeline('after-tts');
+			}
+			console.log(`Audio monitoring and playing stopped for message ID ${id}`);
 		}
-		console.log(`Audio monitoring and playing stopped for message ID ${id}`);
 	};
 
-	const chatStartHandler = async (e) => {
+	const chatStartHandler = async (e: CustomEvent<{ id: string }>) => {
+		if (!isSessionActive()) return;
 		const { id } = e.detail;
 
-		chatStreaming = true;
-
 		if (currentMessageId !== id) {
-			console.log(`Received chat start event for message ID ${id}`);
-
-			currentMessageId = id;
-			if (audioAbortController) {
-				audioAbortController.abort();
-			}
+			audioAbortController.abort();
 			audioAbortController = new AbortController();
 
-			assistantSpeaking = true;
-			// Start monitoring and playing audio for the message ID
-			monitorAndPlayAudio(id, audioAbortController.signal);
+			currentMessageId = id;
+			assistantEchoText = '';
+			finishedMessages[id] = false;
+			messages[id] = [];
+
+			setPhase('waiting_llm', 'chat:start');
+
+			void monitorAndPlayAudio(id, audioAbortController.signal);
 		}
 	};
 
-	const chatEventHandler = async (e) => {
+	const chatEventHandler = async (e: CustomEvent<{ id: string; content: string }>) => {
+		if (!isSessionActive()) return;
 		const { id, content } = e.detail;
-		// "id" here is message id
-		// if "id" is not the same as "currentMessageId" then do not process
-		// "content" here is a sentence from the assistant,
-		// there will be many sentences for the same "id"
 
 		if (currentMessageId === id) {
-			console.log(`Received chat event for message ID ${id}: ${content}`);
-
 			try {
+				if (content && typeof content === 'string') {
+					const merged = `${assistantEchoText} ${content}`.trim();
+					assistantEchoText = merged.slice(-12000);
+				}
 				if (messages[id] === undefined) {
 					messages[id] = [content];
 				} else {
 					messages[id].push(content);
 				}
-
-				console.log(content);
 
 				fetchAudio(content);
 			} catch (error) {
@@ -614,12 +889,57 @@
 		}
 	};
 
-	const chatFinishHandler = async (e) => {
+	const chatFinishHandler = async (e: CustomEvent<{ id: string; content: string }>) => {
+		if (!isSessionActive()) return;
 		const { id, content } = e.detail;
-		// "content" here is the entire message from the assistant
+		if (currentMessageId === id && typeof content === 'string') {
+			assistantEchoText = content.slice(-12000);
+		}
 		finishedMessages[id] = true;
+	};
 
-		chatStreaming = false;
+	const cleanupVoiceSession = async () => {
+		if (sessionCleaned) return;
+		sessionCleaned = true;
+
+		clearVoicesPoll();
+
+		if (wakeVisibilityHandler) {
+			document.removeEventListener('visibilitychange', wakeVisibilityHandler);
+			wakeVisibilityHandler = null;
+		}
+
+		setPhase('stopped', 'cleanup');
+		cancelVadLoop();
+		playbackToken++;
+
+		audioAbortController.abort();
+
+		try {
+			speechSynthesis.cancel();
+		} catch {
+			// ignore
+		}
+
+		const audioElement = document.getElementById('audioElement') as HTMLAudioElement | null;
+		if (audioElement) {
+			audioElement.pause();
+			audioElement.src = '';
+			audioElement.onended = null;
+		}
+
+		await stopAudioStream();
+		await stopCamera();
+
+		messages = {};
+		finishedMessages = {};
+		audioCache.clear();
+		emojiCache.clear();
+		currentMessageId = null;
+		assistantEchoText = '';
+		sttGeneration++;
+
+		voiceSessionPhase.set('idle');
 	};
 
 	onMount(async () => {
@@ -627,14 +947,11 @@
 			try {
 				wakeLock = await navigator.wakeLock.request('screen');
 			} catch (err) {
-				// The Wake Lock request has failed - usually system related, such as battery.
 				console.log(err);
 			}
 
 			if (wakeLock) {
-				// Add a listener to release the wake lock when the page is unloaded
 				wakeLock.addEventListener('release', () => {
-					// the wake lock has been released
 					console.log('Wake Lock released');
 				});
 			}
@@ -643,56 +960,48 @@
 		if ('wakeLock' in navigator) {
 			await setWakeLock();
 
-			document.addEventListener('visibilitychange', async () => {
-				// Re-request the wake lock if the document becomes visible
+			wakeVisibilityHandler = async () => {
 				if (wakeLock !== null && document.visibilityState === 'visible') {
 					await setWakeLock();
 				}
-			});
+			};
+			document.addEventListener('visibilitychange', wakeVisibilityHandler);
 		}
 
-		model = $models.find((m) => m.id === modelId);
+		setPhase('listening', 'mount');
+		await startRecording();
 
-		startRecording();
-
-		eventTarget.addEventListener('chat:start', chatStartHandler);
-		eventTarget.addEventListener('chat', chatEventHandler);
-		eventTarget.addEventListener('chat:finish', chatFinishHandler);
+		eventTarget.addEventListener('chat:start', chatStartHandler as EventListener);
+		eventTarget.addEventListener('chat', chatEventHandler as EventListener);
+		eventTarget.addEventListener('chat:finish', chatFinishHandler as EventListener);
 
 		return async () => {
-			await stopAllAudio();
+			await cleanupVoiceSession();
 
-			stopAudioStream();
-
-			eventTarget.removeEventListener('chat:start', chatStartHandler);
-			eventTarget.removeEventListener('chat', chatEventHandler);
-			eventTarget.removeEventListener('chat:finish', chatFinishHandler);
-
-			audioAbortController.abort();
-			await tick();
-
-			await stopAllAudio();
-
-			await stopRecordingCallback(false);
-			await stopCamera();
+			eventTarget.removeEventListener('chat:start', chatStartHandler as EventListener);
+			eventTarget.removeEventListener('chat', chatEventHandler as EventListener);
+			eventTarget.removeEventListener('chat:finish', chatFinishHandler as EventListener);
 		};
 	});
 
 	onDestroy(async () => {
-		await stopAllAudio();
-		await stopRecordingCallback(false);
-		await stopCamera();
+		eventTarget.removeEventListener('chat:start', chatStartHandler as EventListener);
+		eventTarget.removeEventListener('chat', chatEventHandler as EventListener);
+		eventTarget.removeEventListener('chat:finish', chatFinishHandler as EventListener);
 
-		await stopAudioStream();
-		eventTarget.removeEventListener('chat:start', chatStartHandler);
-		eventTarget.removeEventListener('chat', chatEventHandler);
-		eventTarget.removeEventListener('chat:finish', chatFinishHandler);
-		audioAbortController.abort();
-
-		await tick();
-
-		await stopAllAudio();
+		await cleanupVoiceSession();
 	});
+
+	$: model = $models.find((m) => m.id === modelId) ?? null;
+
+	$: overlayBusy =
+		voiceState === 'transcribing' ||
+		voiceState === 'waiting_llm' ||
+		voiceState === 'speaking' ||
+		voiceState === 'error';
+	$: showListeningUi =
+		voiceState === 'listening' || voiceState === 'interrupted' || voiceState === 'idle';
+	$: showInterruptHint = voiceState === 'speaking';
 </script>
 
 {#if $showCallOverlay}
@@ -702,7 +1011,7 @@
 				type="button"
 				class="flex justify-center items-center w-full h-20 min-h-20"
 				on:click={() => {
-					if (assistantSpeaking) {
+					if (showInterruptHint) {
 						stopAllAudio();
 					}
 				}}
@@ -720,7 +1029,7 @@
 					>
 						{emoji}
 					</div>
-				{:else if loading || assistantSpeaking}
+				{:else if overlayBusy}
 					<svg
 						class="size-12 text-gray-900 dark:text-gray-400"
 						viewBox="0 0 24 24"
@@ -769,7 +1078,6 @@
 						style={`background-image: url('${WEBUI_API_BASE_URL}/models/model/profile/image?id=${model?.id}&lang=${$i18n.language}&voice=true');`}
 					/>
 				{/if}
-				<!-- navbar -->
 			</button>
 		{/if}
 
@@ -778,7 +1086,7 @@
 				<button
 					type="button"
 					on:click={() => {
-						if (assistantSpeaking) {
+						if (showInterruptHint) {
 							stopAllAudio();
 						}
 					}}
@@ -796,7 +1104,7 @@
 						>
 							{emoji}
 						</div>
-					{:else if loading || assistantSpeaking}
+					{:else if overlayBusy}
 						<svg
 							class="size-44 text-gray-900 dark:text-gray-400"
 							viewBox="0 0 24 24"
@@ -947,16 +1255,22 @@
 				<button
 					type="button"
 					on:click={() => {
-						if (assistantSpeaking) {
+						if (showInterruptHint) {
 							stopAllAudio();
 						}
 					}}
 				>
 					<div class=" line-clamp-1 text-sm font-medium">
-						{#if loading}
+						{#if voiceState === 'transcribing'}
 							{$i18n.t('Thinking...')}
-						{:else if assistantSpeaking}
+						{:else if voiceState === 'waiting_llm'}
+							{$i18n.t('Thinking...')}
+						{:else if voiceState === 'error'}
+							{$i18n.t('Error')}
+						{:else if showInterruptHint}
 							{$i18n.t('Tap to interrupt')}
+						{:else if showListeningUi}
+							{$i18n.t('Listening...')}
 						{:else}
 							{$i18n.t('Listening...')}
 						{/if}
@@ -968,12 +1282,7 @@
 				<button
 					class=" p-3 rounded-full bg-gray-50 dark:bg-gray-900"
 					on:click={async () => {
-						await stopAudioStream();
-						await stopVideoStream();
-
-						console.log(audioStream);
-						console.log(cameraStream);
-
+						await cleanupVoiceSession();
 						showCallOverlay.set(false);
 						dispatch('close');
 					}}

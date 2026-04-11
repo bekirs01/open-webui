@@ -4,6 +4,7 @@ import type { ModelConfig } from '$lib/apis';
 import type { Banner } from '$lib/types';
 import type { Socket } from 'socket.io-client';
 import type { AudioQueue } from '$lib/utils/audio';
+import type { VoiceSessionState } from '$lib/utils/voice-session-state';
 
 import emojiShortCodes from '$lib/emoji-shortcodes.json';
 
@@ -100,6 +101,8 @@ export const showEmbeds = writable(false);
 export const showOverview = writable(false);
 export const showArtifacts = writable(false);
 export const showCallOverlay = writable(false);
+/** CallOverlay voice session phase (idle when overlay closed). */
+export const voiceSessionPhase: Writable<VoiceSessionState> = writable('idle');
 export const showFileNav = writable(false);
 export const showFileNavPath: Writable<string | null> = writable(null);
 export const showFileNavDir: Writable<string | null> = writable(null);

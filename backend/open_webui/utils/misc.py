@@ -122,8 +122,8 @@ def get_last_user_message_item(messages: list[dict]) -> Optional[dict]:
 def get_content_from_message(message: dict) -> Optional[str]:
     if isinstance(message.get('content'), list):
         for item in message['content']:
-            if item['type'] == 'text':
-                return item['text']
+            if item.get('type') in ('text', 'input_text'):
+                return item.get('text')
     else:
         return message.get('content')
     return None
@@ -292,9 +292,11 @@ def set_last_user_message_content(content: str, messages: list[dict]) -> list[di
         if message.get('role') == 'user':
             if isinstance(message.get('content'), list):
                 for item in message['content']:
-                    if item.get('type') == 'text':
+                    if item.get('type') in ('text', 'input_text'):
                         item['text'] = content
                         break
+                else:
+                    message['content'].insert(0, {'type': 'text', 'text': content})
             else:
                 message['content'] = content
             break
@@ -360,11 +362,22 @@ def merge_system_messages(messages: list[dict]) -> list[dict]:
 def update_message_content(message: dict, content: str, append: bool = True) -> dict:
     if isinstance(message['content'], list):
         for item in message['content']:
-            if item['type'] == 'text':
+            if not isinstance(item, dict):
+                continue
+            t = item.get('type')
+            if t in ('text', 'input_text'):
+                prev = item.get('text') or ''
                 if append:
-                    item['text'] = f'{item["text"]}\n{content}'
+                    item['text'] = f'{prev}\n{content}'
                 else:
-                    item['text'] = f'{content}\n{item["text"]}'
+                    item['text'] = f'{content}\n{prev}'
+                return message
+        # Multimodal message with no text part yet — inject a text block
+        block = {'type': 'text', 'text': content}
+        if append:
+            message['content'] = [*message['content'], block]
+        else:
+            message['content'] = [block, *message['content']]
     else:
         if append:
             message['content'] = f'{message["content"]}\n{content}'

@@ -1081,6 +1081,9 @@
 		// Cmd/Ctrl+Shift+L to toggle dictation
 		if (e.key.toLowerCase() === 'l' && (e.metaKey || e.ctrlKey) && e.shiftKey) {
 			e.preventDefault();
+			if ($showCallOverlay) {
+				return;
+			}
 			if (recording) {
 				// Confirm and stop recording
 				document.getElementById('confirm-recording-button')?.click();
@@ -1385,31 +1388,33 @@
 						}}
 					/>
 
-					<div class={recording ? '' : 'hidden'}>
-						<VoiceRecording
-							bind:recording
-							onCancel={async () => {
-								recording = false;
+					{#if !$showCallOverlay}
+						<div class={recording ? '' : 'hidden'}>
+							<VoiceRecording
+								bind:recording
+								onCancel={async () => {
+									recording = false;
 
-								await tick();
-								document.getElementById('chat-input')?.focus();
-							}}
-							onConfirm={async (data) => {
-								const { text, filename } = data;
+									await tick();
+									document.getElementById('chat-input')?.focus();
+								}}
+								onConfirm={async (data) => {
+									const { text, filename } = data;
 
-								recording = false;
+									recording = false;
 
-								await tick();
-								await insertTextAtCursor(`${text}`);
-								await tick();
-								document.getElementById('chat-input')?.focus();
+									await tick();
+									await insertTextAtCursor(`${text}`);
+									await tick();
+									document.getElementById('chat-input')?.focus();
 
-								if (($settings?.speechAutoSend ?? false) && promptImprovePhase !== 'streaming') {
-									dispatch('submit', prompt);
-								}
-							}}
-						/>
-					</div>
+									if (($settings?.speechAutoSend ?? false) && promptImprovePhase !== 'streaming') {
+										dispatch('submit', prompt);
+									}
+								}}
+							/>
+						</div>
+					{/if}
 					<form
 						class="w-full flex flex-col gap-1.5 {recording ? 'hidden' : ''}"
 						on:submit|preventDefault={() => {
@@ -2149,12 +2154,22 @@
 
 											{#if $_user?.role === 'admin' || ($_user?.permissions?.chat?.stt ?? true)}
 												<!-- {$i18n.t('Record voice')} -->
-												<Tooltip content={$i18n.t('Dictate')}>
+												<Tooltip
+													content={$showCallOverlay
+														? $i18n.t('Close voice mode to use dictation')
+														: $i18n.t('Dictate')}
+												>
 													<button
 														id="voice-input-button"
-														class=" text-gray-600 dark:text-gray-300 hover:text-gray-700 dark:hover:text-gray-200 transition rounded-full p-1.5 self-center mr-0.5"
+														class=" text-gray-600 dark:text-gray-300 hover:text-gray-700 dark:hover:text-gray-200 transition rounded-full p-1.5 self-center mr-0.5 {$showCallOverlay
+															? 'opacity-40 pointer-events-none'
+															: ''}"
 														type="button"
+														disabled={$showCallOverlay}
 														on:click={async () => {
+															if ($showCallOverlay) {
+																return;
+															}
 															try {
 																let stream = await navigator.mediaDevices
 																	.getUserMedia({ audio: true })

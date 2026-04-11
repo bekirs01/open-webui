@@ -20,6 +20,7 @@
 		config,
 		models,
 		settings,
+		showCallOverlay,
 		temporaryChatEnabled,
 		TTSWorker,
 		user
@@ -213,6 +214,10 @@
 	};
 
 	const speak = async () => {
+		if ($showCallOverlay) {
+			return;
+		}
+
 		if (!(message?.content ?? '').trim().length) {
 			toast.info($i18n.t('No content to speak'));
 			return;
@@ -253,7 +258,7 @@
 
 					speech.onend = () => {
 						speaking = false;
-						if ($settings.conversationMode) {
+						if ($settings.conversationMode && !$showCallOverlay) {
 							document.getElementById('voice-input-button')?.click();
 						}
 					};

@@ -2269,7 +2269,21 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         db_messages = load_messages_from_db(chat_id, parent_message_id)
         if db_messages:
             system_message = get_system_message(form_data.get('messages', []))
+            incoming_before_db = list(form_data.get('messages') or [])
             form_data['messages'] = [system_message, *db_messages] if system_message else db_messages
+            # DB snapshot can lag behind the POST body; ensure the last user turn (URLs, edits) matches the client.
+            try:
+                from open_webui.utils.mws_gpt.registry import extract_last_user_text
+                from open_webui.utils.misc import set_last_user_message_content
+
+                inc = extract_last_user_text(incoming_before_db)
+                cur = extract_last_user_text(form_data.get('messages') or [])
+                if inc and inc.strip():
+                    low_inc, low_cur = inc.lower(), (cur or '').lower()
+                    if ('http' in low_inc and 'http' not in low_cur) or len(inc) > len(cur or '') + 8:
+                        set_last_user_message_content(inc, form_data['messages'])
+            except Exception as e:
+                log.debug('merge incoming user message after DB load: %s', e)
 
             try:
                 from open_webui.utils.mws_gpt.artifact_resolver import extract_last_artifact_for_export
@@ -2362,6 +2376,14 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
     if not form_data.get('_mws_export_completion'):
         form_data = await convert_url_images_to_base64(form_data)
+
+    if not form_data.get('_mws_export_completion'):
+        try:
+            from open_webui.utils.url_page_context import enrich_messages_with_url_pages
+
+            form_data = await enrich_messages_with_url_pages(request, form_data)
+        except Exception as e:
+            log.warning('URL page context enrichment failed: %s', e)
 
     event_emitter = get_event_emitter(metadata)
     event_caller = get_event_call(metadata)
