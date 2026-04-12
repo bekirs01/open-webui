@@ -79,6 +79,11 @@ export function pickPromptImproveModel(models: Model[], selectedIds: string[]): 
 	return best?.id ?? null;
 }
 
+/** Same fast-model heuristic as prompt improve — use for voice-call LLM when the selected model is slow. */
+export function pickVoiceChatModel(models: Model[], selectedIds: string[]): string | null {
+	return pickPromptImproveModel(models, selectedIds);
+}
+
 export function normalizePromptForCompare(a: string, b: string): boolean {
 	return (
 		a.trim().replace(/\s+/g, ' ') ===

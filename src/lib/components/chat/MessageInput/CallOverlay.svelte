@@ -32,6 +32,11 @@
 		VOICE_MIN_TRANSCRIPT_ALNUM,
 		VOICE_ECHO_WORD_OVERLAP_REJECT,
 		VOICE_DUP_TRANSCRIPT_WINDOW_MS,
+		VOICE_TTS_BARGE_IN_SHIELD_MS,
+		VOICE_BARGE_IN_RMS_THRESHOLD,
+		VOICE_BARGE_IN_RMS_THRESHOLD_STRICT,
+		VOICE_BARGE_IN_STRICT_WINDOW_MS,
+		VOICE_BARGE_IN_FRAMES,
 		type VoiceSessionState
 	} from '$lib/utils/voice-session-state';
 	import { validateVoiceTranscript, logTranscriptDecision } from '$lib/utils/voice-transcript-guard';
@@ -111,6 +116,12 @@
 	let lastSubmittedNormalized: string | null = null;
 	let lastSubmittedAt = 0;
 
+	/** After TTS starts: ignore RMS barge-in briefly (speaker bleed). */
+	let ttsBargeInShieldUntil = 0;
+	/** Wall-clock start of current TTS chunk (strict vs relaxed RMS threshold). */
+	let ttsChunkWallClockStartedAt = 0;
+	let bargeInRmsStreak = 0;
+
 	const transcriptDebug = () =>
 		typeof localStorage !== 'undefined' && localStorage.getItem('VOICE_TRANSCRIPT_DEBUG') === '1';
 
@@ -120,6 +131,9 @@
 	};
 
 	const flushMicForTtsPlayback = () => {
+		ttsChunkWallClockStartedAt = Date.now();
+		ttsBargeInShieldUntil = Date.now() + VOICE_TTS_BARGE_IN_SHIELD_MS;
+		bargeInRmsStreak = 0;
 		skipResumeAfterDrop = true;
 		micCaptureEnabled = false;
 		segmentReady = false;
@@ -247,12 +261,23 @@
 
 	const MIN_DECIBELS = -55;
 
+	/** Prefer Opus-in-WebM (aligned with VoiceRecording.svelte) — correct MIME/extension helps STT decode. */
+	const PREFERRED_RECORDER_MIME_TYPES = [
+		'audio/webm;codecs=opus',
+		'audio/webm; codecs=opus',
+		'audio/webm',
+		'audio/mp4'
+	];
+
 	const transcribeHandler = async (audioBlob: Blob) => {
 		const myGen = ++sttGeneration;
 		await tick();
 		if (!isSessionActive()) return;
 
-		const file = blobToFile(audioBlob, 'recording.wav');
+		const blobType = audioBlob.type || 'audio/webm';
+		let ext = blobType.split('/')[1]?.split(';')[0]?.trim() || 'webm';
+		if (!blobType.startsWith('audio/')) ext = 'webm';
+		const file = blobToFile(audioBlob, `recording.${ext}`);
 
 		setPhase('transcribing', 'stt');
 
@@ -346,6 +371,7 @@
 
 		if (get(showCallOverlay) && !sessionCleaned) {
 			const _audioChunks = audioChunks.slice(0);
+			const recorderMimeFallback = mediaRecorder?.mimeType ?? '';
 			audioChunks = [];
 			mediaRecorder = null;
 
@@ -363,7 +389,9 @@
 					];
 				}
 
-				const audioBlob = new Blob(_audioChunks, { type: 'audio/wav' });
+				const blobMime =
+					(_audioChunks.length && _audioChunks[0]?.type) || recorderMimeFallback || 'audio/webm';
+				const audioBlob = new Blob(_audioChunks, { type: blobMime });
 				segmentReady = false;
 				await transcribeHandler(audioBlob);
 			}
@@ -425,7 +453,10 @@
 			});
 		}
 
-		mediaRecorder = new MediaRecorder(audioStream);
+		const supportedMime = PREFERRED_RECORDER_MIME_TYPES.find((t) => MediaRecorder.isTypeSupported(t));
+		mediaRecorder = supportedMime
+			? new MediaRecorder(audioStream, { mimeType: supportedMime })
+			: new MediaRecorder(audioStream);
 
 		mediaRecorder.onstart = () => {
 			audioChunks = [];
@@ -515,7 +546,8 @@
 
 		const detectSound = () => {
 			const processFrame = () => {
-				if (!mediaRecorder || !get(showCallOverlay) || sessionCleaned) {
+				// TTS path clears MediaRecorder but keeps the same mic stream — still run VAD for barge-in.
+				if (!audioStream || !get(showCallOverlay) || sessionCleaned) {
 					return;
 				}
 
@@ -548,18 +580,42 @@
 						mediaRecorder.start();
 					}
 
-					if (!hasStartedSpeaking) {
-						hasStartedSpeaking = true;
-						speechStartAt = Date.now();
-						if (isSpeakingPhase) {
-							void interruptAssistantPlayback('user-speech-during-tts');
+					// User end-of-utterance detection only while listening (not during assistant TTS bleed).
+					if (!isSpeakingPhase) {
+						if (!hasStartedSpeaking) {
+							hasStartedSpeaking = true;
+							speechStartAt = Date.now();
 						}
 					}
 
 					lastSoundTime = Date.now();
 				}
 
-				if (hasStartedSpeaking && speechStartAt !== null) {
+				// Barge-in: after shield, stricter RMS while chunk is young (echo), then easier (real interrupt).
+				if (
+					isSpeakingPhase &&
+					($settings?.voiceInterruption ?? true) &&
+					Date.now() >= ttsBargeInShieldUntil
+				) {
+					const chunkAge = Date.now() - ttsChunkWallClockStartedAt;
+					const thr =
+						chunkAge < VOICE_BARGE_IN_STRICT_WINDOW_MS
+							? VOICE_BARGE_IN_RMS_THRESHOLD_STRICT
+							: VOICE_BARGE_IN_RMS_THRESHOLD;
+					if (rmsLevel >= thr) {
+						bargeInRmsStreak++;
+						if (bargeInRmsStreak >= VOICE_BARGE_IN_FRAMES) {
+							bargeInRmsStreak = 0;
+							void interruptAssistantPlayback('user-speech-during-tts');
+						}
+					} else {
+						bargeInRmsStreak = 0;
+					}
+				} else {
+					bargeInRmsStreak = 0;
+				}
+
+				if (!isSpeakingPhase && hasStartedSpeaking && speechStartAt !== null) {
 					if (Date.now() - lastSoundTime > VOICE_SILENCE_END_MS) {
 						const activeSpan = lastSoundTime - speechStartAt;
 						if (activeSpan < VOICE_MIN_SPEECH_MS) {
@@ -812,7 +868,7 @@
 								setPhase('speaking', 'play-chunk');
 								await playAudio(audio);
 								if (!isSessionActive() || signal.aborted) break;
-								await new Promise((resolve) => setTimeout(resolve, 200));
+								await new Promise((resolve) => setTimeout(resolve, 85));
 							} catch (error) {
 								console.error('Error playing audio:', error);
 							}
@@ -824,13 +880,13 @@
 						}
 					} else {
 						messages[id].unshift(content);
-						await new Promise((resolve) => setTimeout(resolve, 200));
+						await new Promise((resolve) => setTimeout(resolve, 85));
 					}
 				} else if (finishedMessages[id] && messages[id] && messages[id].length === 0) {
 					normalExit = true;
 					break;
 				} else {
-					await new Promise((resolve) => setTimeout(resolve, 200));
+					await new Promise((resolve) => setTimeout(resolve, 85));
 				}
 			}
 		} finally {

@@ -54,7 +54,6 @@
 	import {
 		convertMessagesToHistory,
 		copyToClipboard,
-		getMessageContentParts,
 		createMessagesList,
 		getPromptVariables,
 		processDetails,
@@ -92,6 +91,15 @@
 	import { createOpenAITextStream } from '$lib/apis/streaming';
 	import { getFunctions } from '$lib/apis/functions';
 	import { updateFolderById } from '$lib/apis/folders';
+	import {
+		pickVoiceChatModel,
+		isReasoningOrSlowPromptImproveModel
+	} from '$lib/utils/prompt-improve';
+	import {
+		VOICE_TTS_STREAM_FIRST_MIN,
+		VOICE_TTS_STREAM_MIN_CHARS,
+		VOICE_TTS_STREAM_MAX_CHARS
+	} from '$lib/utils/voice-session-state';
 
 	import Banner from '../common/Banner.svelte';
 	import MessageInput from '$lib/components/chat/MessageInput.svelte';
@@ -113,6 +121,67 @@
 	let loading = true;
 
 	const eventTarget = new EventTarget();
+
+	/** Stream TTS in voice overlay: chunk by size/breaks instead of waiting for full sentences (see #voiceStreamTtsOffset). */
+	const emitVoiceTtsStreamChunks = (message: any, cleanedFull: string, streamFinished: boolean) => {
+		if (!get(showCallOverlay) || typeof cleanedFull !== 'string') return;
+		let start =
+			typeof message.voiceStreamTtsOffset === 'number' && message.voiceStreamTtsOffset >= 0
+				? message.voiceStreamTtsOffset
+				: 0;
+		if (start > cleanedFull.length) start = 0;
+
+		if (streamFinished) {
+			const rest = cleanedFull.slice(start).trim();
+			if (rest.length > 0) {
+				eventTarget.dispatchEvent(
+					new CustomEvent('chat', {
+						detail: { id: message.id, content: rest }
+					})
+				);
+			}
+			message.voiceStreamTtsOffset = cleanedFull.length;
+			return;
+		}
+
+		let loops = 0;
+		while (loops++ < 24) {
+			start =
+				typeof message.voiceStreamTtsOffset === 'number' && message.voiceStreamTtsOffset >= 0
+					? message.voiceStreamTtsOffset
+					: 0;
+			const available = cleanedFull.length - start;
+			const min = start === 0 ? VOICE_TTS_STREAM_FIRST_MIN : VOICE_TTS_STREAM_MIN_CHARS;
+			if (available < min) return;
+
+			const end = Math.min(start + VOICE_TTS_STREAM_MAX_CHARS, cleanedFull.length);
+			const win = cleanedFull.slice(start, end);
+			let relBreak = -1;
+			const separators = ['. ', '! ', '? ', '\n', '; ', ';', ', ', ','];
+			for (const sep of separators) {
+				const idx = win.lastIndexOf(sep);
+				if (idx >= min - 16 && idx > relBreak) relBreak = idx + sep.length;
+			}
+			if (relBreak < 0) {
+				const sp = win.lastIndexOf(' ');
+				if (sp >= min - 16) relBreak = sp + 1;
+			}
+			if (relBreak < 0) {
+				relBreak = Math.min(min, win.length);
+			}
+			const chunk = cleanedFull.slice(start, start + relBreak).trim();
+			if (chunk.length < 8) {
+				return;
+			}
+			message.voiceStreamTtsOffset = start + relBreak;
+			eventTarget.dispatchEvent(
+				new CustomEvent('chat', {
+					detail: { id: message.id, content: chunk }
+				})
+			);
+		}
+	};
+
 	let controlPane: Pane | undefined;
 	let controlPaneComponent: ChatControls | undefined;
 
@@ -1650,6 +1719,9 @@
 			if (choices[0]?.message?.content) {
 				// Non-stream response
 				message.content += choices[0]?.message?.content;
+				if ($showCallOverlay) {
+					emitVoiceTtsStreamChunks(message, removeAllDetails(message.content), true);
+				}
 			} else {
 				// Stream response
 				let value = choices[0]?.delta?.content ?? '';
@@ -1662,29 +1734,8 @@
 						navigator.vibrate(5);
 					}
 
-					// Emit chat event for TTS (only when call overlay is active)
 					if ($showCallOverlay) {
-						const messageContentParts = getMessageContentParts(
-							removeAllDetails(message.content),
-							$config?.audio?.tts?.split_on ?? 'punctuation'
-						);
-						messageContentParts.pop();
-
-						// dispatch only last sentence and make sure it hasn't been dispatched before
-						if (
-							messageContentParts.length > 0 &&
-							messageContentParts[messageContentParts.length - 1] !== message.lastSentence
-						) {
-							message.lastSentence = messageContentParts[messageContentParts.length - 1];
-							eventTarget.dispatchEvent(
-								new CustomEvent('chat', {
-									detail: {
-										id: message.id,
-										content: messageContentParts[messageContentParts.length - 1]
-									}
-								})
-							);
-						}
+						emitVoiceTtsStreamChunks(message, removeAllDetails(message.content), false);
 					}
 				}
 			}
@@ -1698,29 +1749,8 @@
 				navigator.vibrate(5);
 			}
 
-			// Emit chat event for TTS (only when call overlay is active)
 			if ($showCallOverlay) {
-				const messageContentParts = getMessageContentParts(
-					removeAllDetails(message.content),
-					$config?.audio?.tts?.split_on ?? 'punctuation'
-				);
-				messageContentParts.pop();
-
-				// dispatch only last sentence and make sure it hasn't been dispatched before
-				if (
-					messageContentParts.length > 0 &&
-					messageContentParts[messageContentParts.length - 1] !== message.lastSentence
-				) {
-					message.lastSentence = messageContentParts[messageContentParts.length - 1];
-					eventTarget.dispatchEvent(
-						new CustomEvent('chat', {
-							detail: {
-								id: message.id,
-								content: messageContentParts[messageContentParts.length - 1]
-							}
-						})
-					);
-				}
+				emitVoiceTtsStreamChunks(message, removeAllDetails(message.content), false);
 			}
 		}
 
@@ -1752,20 +1782,8 @@
 				document.getElementById(`speak-button-${message.id}`)?.click();
 			}
 
-			// Emit chat event for TTS (only when call overlay is active)
 			if ($showCallOverlay) {
-				let lastMessageContentPart =
-					getMessageContentParts(
-						removeAllDetails(message.content),
-						$config?.audio?.tts?.split_on ?? 'punctuation'
-					)?.at(-1) ?? '';
-				if (lastMessageContentPart) {
-					eventTarget.dispatchEvent(
-						new CustomEvent('chat', {
-							detail: { id: message.id, content: lastMessageContentPart }
-						})
-					);
-				}
+				emitVoiceTtsStreamChunks(message, removeAllDetails(message.content), true);
 			}
 			eventTarget.dispatchEvent(
 				new CustomEvent('chat:finish', {
@@ -2012,11 +2030,21 @@
 				? [atSelectedModel.id]
 				: selectedModels;
 
+		const resolveVoiceChatModel = (m: Model): Model => {
+			if (!$showCallOverlay || !isReasoningOrSlowPromptImproveModel(m.id, m.name ?? '')) {
+				return m;
+			}
+			const fastId = pickVoiceChatModel($models, selectedModelIds);
+			if (!fastId) return m;
+			return $models.find((x) => x.id === fastId) ?? m;
+		};
+
 		// Create response messages for each selected model
 		for (const [_modelIdx, modelId] of selectedModelIds.entries()) {
 			const model = $models.filter((m) => m.id === modelId).at(0);
 
 			if (model) {
+				const effectiveModel = resolveVoiceChatModel(model);
 				let responseMessageId = uuidv4();
 				let responseMessage = {
 					parentId: parentId,
@@ -2024,8 +2052,8 @@
 					childrenIds: [],
 					role: 'assistant',
 					content: '',
-					model: model.id,
-					modelName: model.name ?? model.id,
+					model: effectiveModel.id,
+					modelName: effectiveModel.name ?? effectiveModel.id,
 					modelIdx: modelIdx ? modelIdx : _modelIdx,
 					timestamp: Math.floor(Date.now() / 1000) // Unix epoch
 				};
@@ -2065,6 +2093,7 @@
 				const model = $models.filter((m) => m.id === modelId).at(0);
 
 				if (model) {
+					const effectiveModel = resolveVoiceChatModel(model);
 					// If there are image files, check if model is vision capable
 					// Skip this check if image generation is enabled, as images may be for editing or are generated outputs in the history
 					const hasImages = createMessagesList(_history, parentId).some((message) =>
@@ -2075,23 +2104,23 @@
 
 					if (
 						hasImages &&
-						!(model.info?.meta?.capabilities?.vision ?? true) &&
+						!(effectiveModel.info?.meta?.capabilities?.vision ?? true) &&
 						!imageGenerationEnabled
 					) {
 						toast.error(
 							$i18n.t('Model {{modelName}} is not vision capable', {
-								modelName: model.name ?? model.id
+								modelName: effectiveModel.name ?? effectiveModel.id
 							})
 						);
 					}
 
 					let responseMessageId =
 						responseMessageIds[`${modelId}-${modelIdx ? modelIdx : _modelIdx}`];
-					const chatEventEmitter = await getChatEventEmitter(model.id, _chatId);
+					const chatEventEmitter = await getChatEventEmitter(effectiveModel.id, _chatId);
 
 					scrollToBottom();
 					await sendMessageSocket(
-						model,
+						effectiveModel,
 						messages && messages.length > 0
 							? messages
 							: createMessagesList(_history, responseMessageId),
@@ -2323,7 +2352,8 @@
 				params: {
 					...$settings?.params,
 					...params,
-					...(deepThinkingEnabled ? { mws_deep_thinking: true } : {}),
+					// Voice overlay: deep thinking adds latency; keep it for text chat only.
+					...(deepThinkingEnabled && !get(showCallOverlay) ? { mws_deep_thinking: true } : {}),
 					stop: getStopTokens()
 				},
 

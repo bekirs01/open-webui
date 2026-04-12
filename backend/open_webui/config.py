@@ -3982,7 +3982,7 @@ AUDIO_TTS_MODEL = PersistentConfig(
 AUDIO_TTS_VOICE = PersistentConfig(
     'AUDIO_TTS_VOICE',
     'audio.tts.voice',
-    os.getenv('AUDIO_TTS_VOICE', 'alloy'),  # OpenAI default voice
+    os.getenv('AUDIO_TTS_VOICE', 'nova'),  # OpenAI: clear, natural default (override in Admin → Audio)
 )
 
 AUDIO_TTS_SPLIT_ON = PersistentConfig(
