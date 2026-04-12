@@ -1,5 +1,6 @@
 <script lang="ts">
 	import dayjs from 'dayjs';
+	import { colorForModelId } from '$lib/utils/analyticsColors';
 
 	interface Props {
 		data: { date: string; models: Record<string, number> }[];
@@ -14,7 +15,10 @@
 	let hoveredIdx: number | null = $state(null);
 	let mouseX = $state(0);
 
-	let colorMap = $derived(new Map(models.map((n, i) => [n, colors[i % colors.length]])));
+	/** Same model_id → same color as usage bar (hash of id, not list position). */
+	let colorMap = $derived(
+		new Map(models.map((n) => [n, colorForModelId(n, colors)]))
+	);
 	let maxCount = $derived(Math.max(...data.flatMap((d) => Object.values(d.models || {})), 1));
 
 	const pad = { t: 8, r: 0, b: 20, l: 0 };
@@ -119,7 +123,13 @@
 					.sort(([, a], [, b]) => b - a)
 					.slice(0, 5) as [n, c]}
 					<div class="flex items-center justify-between gap-2 py-0.5">
-						<span class="min-w-0 truncate text-gray-600 dark:text-gray-300">{n}</span>
+						<span class="flex min-w-0 items-center gap-1.5 truncate text-gray-600 dark:text-gray-300">
+							<span
+								class="size-2 shrink-0 rounded-full"
+								style="background:{colorMap.get(n)}"
+							></span>
+							{n}
+						</span>
 						<span class="shrink-0 text-gray-900 tabular-nums dark:text-white"
 							>{c.toLocaleString()}
 							<span class="text-gray-400">({total > 0 ? ((c / total) * 100).toFixed(0) : 0}%)</span

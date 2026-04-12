@@ -17,6 +17,7 @@
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import { WEBUI_API_BASE_URL } from '$lib/constants';
 	import { formatNumber } from '$lib/utils';
+	import { ANALYTICS_MODEL_PALETTE, colorForModelId } from '$lib/utils/analyticsColors';
 	import { goto } from '$app/navigation';
 
 	const i18n = getContext('i18n');
@@ -182,6 +183,9 @@
 
 	$: totalModelMessages = modelStats.reduce((sum, m) => sum + m.count, 0);
 
+	/** Descending by count for the distribution bar (visual order). */
+	$: modelsByCountDesc = [...modelStats].sort((a, b) => b.count - a.count);
+
 	// Persist period selection
 	$: if (typeof localStorage !== 'undefined' && selectedPeriod) {
 		localStorage.setItem('analyticsPeriod', selectedPeriod);
@@ -261,16 +265,6 @@
 	{#if dailyStats.length > 1}
 		{@const allModels = [...new Set(dailyStats.flatMap((d) => Object.keys(d.models || {})))]}
 		{@const topModels = allModels.slice(0, 8)}
-		{@const chartColors = [
-			'#3b82f6',
-			'#10b981',
-			'#f59e0b',
-			'#ef4444',
-			'#8b5cf6',
-			'#ec4899',
-			'#06b6d4',
-			'#84cc16'
-		]}
 		{@const periodMap = { '24h': 'hour', '7d': 'week', '30d': 'month', '90d': 'year', all: 'all' }}
 		<div class="mb-4">
 			<div class="text-xs font-medium text-gray-600 dark:text-gray-400 mb-2 px-0.5">
@@ -279,7 +273,7 @@
 			<ChartLine
 				data={dailyStats}
 				models={topModels}
-				colors={chartColors}
+				colors={ANALYTICS_MODEL_PALETTE}
 				height={200}
 				period={periodMap[selectedPeriod] || 'week'}
 			/>
@@ -292,6 +286,31 @@
 		<Spinner className="size-5" />
 	</div>
 {:else}
+	{#if modelsByCountDesc.length > 0 && totalModelMessages > 0}
+		<div class="mb-4 px-0.5">
+			<div class="text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
+				{$i18n.t('Usage')}
+			</div>
+			<p class="text-xs text-gray-500 dark:text-gray-400 mb-2">{$i18n.t('UsageBarAdminHint')}</p>
+			<div
+				class="w-full h-9 rounded-lg overflow-hidden flex flex-row ring-1 ring-gray-200/80 dark:ring-gray-700"
+				role="img"
+				aria-label={$i18n.t('UsageDistribution')}
+			>
+				{#each modelsByCountDesc as model (model.model_id)}
+					<div
+						class="min-w-[2px] h-full shrink-0"
+						style="width: {(model.count / totalModelMessages) * 100}%; background: {colorForModelId(
+							model.model_id,
+							ANALYTICS_MODEL_PALETTE
+						)}"
+						title="{model.name}: {((model.count / totalModelMessages) * 100).toFixed(1)}%"
+					/>
+				{/each}
+			</div>
+		</div>
+	{/if}
+
 	<div class="grid md:grid-cols-2 gap-4">
 		<!-- Model Usage Table -->
 		<div>
@@ -389,6 +408,14 @@
 								<td class="px-3 py-1 text-gray-400">{idx + 1}</td>
 								<td class="px-3 py-1 font-medium text-gray-900 dark:text-white">
 									<div class="flex items-center gap-2">
+										<span
+											class="size-2.5 shrink-0 rounded-full ring-1 ring-white/30"
+											style="background: {colorForModelId(
+												model.model_id,
+												ANALYTICS_MODEL_PALETTE
+											)}"
+											aria-hidden="true"
+										/>
 										<img
 											src="{WEBUI_API_BASE_URL}/models/model/profile/image?id={model.model_id}"
 											alt={model.name}

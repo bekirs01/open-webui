@@ -2059,6 +2059,8 @@
 	"URL is required": "Требуется URL",
 	"URL Mode": "Режим URL",
 	"Usage": "Использование",
+	"UsageBarAdminHint": "Доля ответов ассистента по моделям за выбранный период и фильтр группы.",
+	"UsageDistribution": "Распределение использования моделей",
 	"Use": "",
 	"Use '#' in the prompt input to load and include your knowledge.": "Используйте «#» в строке ввода, чтобы загрузить и включить свои знания.",
 	"Use /v1/chat/completions endpoint instead of /v1/audio/transcriptions for potentially better accuracy.": "",
