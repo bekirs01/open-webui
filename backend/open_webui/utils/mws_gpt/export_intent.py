@@ -122,6 +122,9 @@ def parse_export_intent(message_text: str) -> ExportIntent | None:
     if re.search(r'\b(?:save|download)\s+as\s+(?:pdf|png|jpe?g|jpeg|webp)\b', low):
         return _intent_from_text(low, t)
 
+    if re.search(r'\b(?:pdf|png|jpe?g|jpeg|webp)\s+olarak\s+ver\b', low):
+        return _intent_from_text(low, t)
+
     return None
 
 
@@ -179,7 +182,9 @@ def wants_downloadable_delivery(message_text: str) -> ExportIntent | None:
     # Türkçe: indirilebilir formata / dosya olarak / bana indir
     broad_tr = (
         'indirilebilir formata',
+        'indirilebilir formatta',
         'indirilebilir format',
+        'indirilebilir ver',
         'indirilebilir dosya',
         'indirebileyim',
         'indirebilmem',
@@ -197,7 +202,10 @@ def wants_downloadable_delivery(message_text: str) -> ExportIntent | None:
         'kaydedilebilir',
     )
     if any(x in low for x in broad_tr):
-        return _intent_from_text(low, t) or ExportIntent('image_pdf', 'pdf')
+        return _intent_from_text(low, t) or ExportIntent('image_raster', 'png')
+
+    if re.search(r'^\s*(?:bunu|şunu)\s+indirilebilir\b', low) and len(t) < 160:
+        return ExportIntent('image_raster', 'png')
 
     # Kısa emir: "bana indir", "download this"
     if len(t) < 140:

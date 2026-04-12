@@ -10,6 +10,43 @@ from typing import Any
 _MARKDOWN_IMG = re.compile(r'!\[[^\]]*\]\(([^)]+)\)')
 
 
+def extract_last_image_artifact_for_export(messages: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+    """
+    Last assistant raster image only (for image→PDF/PNG/JPEG/WEBP).
+
+    Skips non-image attachments (e.g. a prior PDF export) so repeated format
+    requests still convert from the original generated image.
+    """
+    if not messages:
+        return None
+
+    tail_user = _last_user_index(messages)
+    search = messages[:tail_user] if tail_user is not None else messages
+
+    for m in reversed(search):
+        if m.get('role') != 'assistant':
+            continue
+
+        for f in m.get('files') or []:
+            if not isinstance(f, dict):
+                continue
+            url = (f.get('url') or '').strip()
+            ct = (f.get('content_type') or '').lower()
+            typ = f.get('type')
+            fid = f.get('id')
+            if typ == 'image' or ct.startswith('image/'):
+                if url:
+                    return {'kind': 'image', 'url': url, 'file_id': fid}
+                if fid:
+                    return {'kind': 'image', 'url': str(fid), 'file_id': fid}
+
+        img_url = _image_url_from_content(m.get('content'))
+        if img_url:
+            return {'kind': 'image', 'url': img_url, 'file_id': None}
+
+    return None
+
+
 def extract_last_artifact_for_export(messages: list[dict[str, Any]] | None) -> dict[str, Any] | None:
     """
     Inspect conversation messages (before LLM-specific stripping). Returns last exportable artifact

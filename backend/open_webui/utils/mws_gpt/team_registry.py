@@ -239,6 +239,19 @@ def pick_auto_target_model(
     return None, None
 
 
+def pick_mws_image_edit_model_id(request: Any) -> str | None:
+    """
+    Model id for /images/edits (MWS): prefer env, else first team image model (qwen-image, then lightning).
+    """
+    raw = (os.environ.get('MWS_IMAGE_EDIT_MODEL_ID') or '').strip()
+    if raw:
+        return raw
+    models = getattr(request.app.state, 'MODELS', None) or {}
+    available = set(models.keys())
+    av = filter_team_available(available)
+    return first_available(AUTO_IMAGE_ORDER, av)
+
+
 def pick_text_model_for_chat_followup(request: Any) -> str | None:
     """
     After image generation, chat completion must not use image-only model IDs (MWS returns 404 on /chat/completions).

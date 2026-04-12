@@ -14,6 +14,62 @@ from fastapi import Request, UploadFile
 log = logging.getLogger(__name__)
 
 
+def _artifact_from_chat_file_rows(
+    request: Request,
+    chat_id: str,
+    messages: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """
+    Fallback when assistant message JSON has no `files` but ChatFile rows exist
+    (legacy rows from insert_chat_files without add_message_files).
+    """
+    if not messages:
+        return None
+    from open_webui.models.chats import Chats
+    from open_webui.models.files import Files
+
+    tail_user: int | None = None
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].get('role') == 'user':
+            tail_user = i
+            break
+    search = messages[:tail_user] if tail_user is not None else messages
+
+    def _is_raster_file(fm: Any) -> bool:
+        meta = getattr(fm, 'meta', None) or {}
+        data = getattr(fm, 'data', None) or {}
+        ct = ''
+        if isinstance(meta, dict):
+            ct = (meta.get('content_type') or '') or ''
+        if not ct and isinstance(data, dict):
+            ct = (data.get('content_type') or '') or ''
+        fn = (getattr(fm, 'filename', None) or '').lower()
+        if ct.startswith('image/'):
+            return True
+        return fn.endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'))
+
+    for m in reversed(search):
+        if m.get('role') != 'assistant':
+            continue
+        mid = m.get('id')
+        if not mid:
+            continue
+        try:
+            rows = Chats.get_chat_files_by_chat_id_and_message_id(chat_id, mid)
+        except Exception:
+            continue
+        for row in reversed(rows or []):
+            fid = getattr(row, 'file_id', None)
+            if not fid:
+                continue
+            fm = Files.get_file_by_id(fid)
+            if not fm or not _is_raster_file(fm):
+                continue
+            url = str(request.app.url_path_for('get_file_content_by_id', id=fid))
+            return {'kind': 'image', 'url': url, 'file_id': fid}
+    return None
+
+
 async def try_mws_export_conversion(
     request: Request,
     form_data: dict[str, Any],
@@ -24,6 +80,7 @@ async def try_mws_export_conversion(
     try:
         from open_webui.utils.mws_gpt.artifact_resolver import (
             extract_last_artifact_for_export,
+            extract_last_image_artifact_for_export,
             guess_user_language_turkish,
         )
         from open_webui.utils.mws_gpt.export_intent import resolve_export_intent
@@ -39,18 +96,32 @@ async def try_mws_export_conversion(
         message_id = metadata.get('message_id')
         tr = guess_user_language_turkish(last_user)
 
-        artifact = form_data.get('_mws_last_artifact')
-        if artifact is None:
-            artifact = extract_last_artifact_for_export(form_data.get('messages') or [])
+        needs_image_bytes = intent.kind in ('image_raster', 'image_pdf', 'svg_embed')
 
-        for f in form_data.get('files') or []:
-            if not isinstance(f, dict):
-                continue
-            ct = (f.get('content_type') or '').lower()
-            u = f.get('url') or ''
-            if u and (f.get('type') == 'image' or ct.startswith('image/')):
-                artifact = {'kind': 'image', 'url': u, 'file_id': f.get('id')}
-                break
+        artifact: dict[str, Any] | None = None
+        if needs_image_bytes:
+            artifact = form_data.get('_mws_last_image_artifact')
+            if artifact is None:
+                artifact = extract_last_image_artifact_for_export(form_data.get('messages') or [])
+        else:
+            artifact = form_data.get('_mws_last_artifact')
+            if artifact is None:
+                artifact = extract_last_artifact_for_export(form_data.get('messages') or [])
+
+        if artifact is None and chat_id and not str(chat_id).startswith('local:'):
+            artifact = _artifact_from_chat_file_rows(
+                request, chat_id, form_data.get('messages') or []
+            )
+
+        if needs_image_bytes:
+            for f in form_data.get('files') or []:
+                if not isinstance(f, dict):
+                    continue
+                ct = (f.get('content_type') or '').lower()
+                u = f.get('url') or ''
+                if u and (f.get('type') == 'image' or ct.startswith('image/')):
+                    artifact = {'kind': 'image', 'url': u, 'file_id': f.get('id')}
+                    break
 
         # Çıktı yoksa veya geçici sohbet: sunucu dönüşümü yapılamaz → LLM + export_* araçları
         if artifact is None:
@@ -179,7 +250,10 @@ def _success_msg(kind: str, tr: bool) -> str:
     if kind == 'pdf':
         return 'PDF hazır.' if tr else 'PDF is ready.'
     if kind in ('png', 'jpeg', 'webp'):
-        return f'{kind.upper()} olarak hazır.' if tr else f'Here is your {kind.upper()} file.'
+        if tr:
+            lab = 'PNG' if kind == 'png' else ('WEBP' if kind == 'webp' else 'JPEG')
+            return f'{lab} hazır.'
+        return f'Here is your {kind.upper()} file.'
     if kind == 'svg':
         return 'SVG dosyası hazır (gömülü PNG).' if tr else 'SVG is ready (embedded PNG).'
     if kind == 'json':
@@ -246,8 +320,12 @@ def _convert(
         raise ValueError('no_artifact')
 
     if artifact.get('kind') == 'image':
-        url = artifact.get('url') or ''
-        raw = get_image_bytes_from_source(url)
+        url = (artifact.get('url') or '').strip()
+        fid = artifact.get('file_id')
+        src = url or (str(fid) if fid else '')
+        raw = get_image_bytes_from_source(src)
+        if not raw or len(raw) < 32:
+            raise ValueError('empty_image_bytes')
 
         # Same raster format as source: return clean re-upload without useless recompression when possible
         if kind == 'image_raster' and target in ('png', 'jpeg', 'jpg', 'webp'):
@@ -268,6 +346,8 @@ def _convert(
 
         if kind == 'image_pdf' or target == 'pdf':
             pdf = image_bytes_to_pdf_bytes(raw)
+            if not pdf or len(pdf) < 200:
+                raise ValueError('empty_pdf_output')
             return pdf, f'{title_slug}.pdf', 'application/pdf', 'pdf'
 
         if intent.kind == 'svg_embed' or target == 'svg':

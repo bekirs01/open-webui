@@ -13,6 +13,13 @@ from open_webui.config import DEFAULT_RAG_TEMPLATE
 log = logging.getLogger(__name__)
 
 
+def _with_task_language_footer(template: str, messages: list[dict]) -> str:
+    """Append one-language rule to task prompts (title, tags, follow-ups, queries)."""
+    from open_webui.utils.output_language_guard import append_task_language_footer
+
+    return append_task_language_footer(template, messages)
+
+
 # Let the right tool be given for the work at hand,
 # not the one that flatters, but the one that serves.
 def get_task_model_id(default_model_id: str, task_model: str, task_model_external: str, models) -> str:
@@ -289,7 +296,7 @@ def title_generation_template(template: str, messages: list[dict], user: Optiona
 
     template = prompt_template(template, user)
 
-    return template
+    return _with_task_language_footer(template, messages)
 
 
 def follow_up_generation_template(template: str, messages: list[dict], user: Optional[Any] = None) -> str:
@@ -298,7 +305,8 @@ def follow_up_generation_template(template: str, messages: list[dict], user: Opt
     template = replace_messages_variable(template, messages)
 
     template = prompt_template(template, user)
-    return template
+
+    return _with_task_language_footer(template, messages)
 
 
 def tags_generation_template(template: str, messages: list[dict], user: Optional[Any] = None) -> str:
@@ -307,7 +315,8 @@ def tags_generation_template(template: str, messages: list[dict], user: Optional
     template = replace_messages_variable(template, messages)
 
     template = prompt_template(template, user)
-    return template
+
+    return _with_task_language_footer(template, messages)
 
 
 def image_prompt_generation_template(template: str, messages: list[dict], user: Optional[Any] = None) -> str:
@@ -316,7 +325,8 @@ def image_prompt_generation_template(template: str, messages: list[dict], user: 
     template = replace_messages_variable(template, messages)
 
     template = prompt_template(template, user)
-    return template
+
+    return _with_task_language_footer(template, messages)
 
 
 def emoji_generation_template(template: str, prompt: str, user: Optional[Any] = None) -> str:
@@ -347,7 +357,8 @@ def query_generation_template(template: str, messages: list[dict], user: Optiona
     template = replace_messages_variable(template, messages)
 
     template = prompt_template(template, user)
-    return template
+
+    return _with_task_language_footer(template, messages)
 
 
 def moa_response_generation_template(template: str, prompt: str, responses: list[str]) -> str:

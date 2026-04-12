@@ -244,6 +244,138 @@ def extract_last_user_text(messages: list[dict[str, Any]] | None) -> str:
     return ''
 
 
+def wants_image_edit_pipeline_turn(message_text: str) -> bool:
+    """
+    True when the user intends image-to-image / edit / style on an uploaded photo (not vision Q&A only).
+
+    Used to enable chat_image_generation_handler so image_edits receives the attachment URLs from the request body.
+    Actual routing still requires a resolvable source image (this turn, chat history, or DB fallback).
+    """
+    t = _normalize_tr_keyboard_typos((message_text or '').strip())
+    if not t:
+        return False
+    low = t.lower()
+
+    # Pure description / VQA on an image — do not hijack into image edit API
+    if re.search(
+        r'\b(?:bu|şu)\s+(?:görsel|foto|fotoğraf|resim)\w*\s+(?:içinde|de|da|ta)\s+(?:ne\s+var|kim(?:dir)?|nedir)\b',
+        low,
+    ):
+        return False
+    if re.search(
+        r'^\s*(?:what|who|where|when|how\s+much|which|whose|describe|explain|açıkla|tanımla|'
+        r'bu\s+nedir|nedir|kim(?:dir)?|hangi|kaç)\b',
+        low,
+    ) and not re.search(
+        r'\b(?:çiz|ciz|draw|giydir|elbise|takım|suit|edit|düzenle|değiştir|üzerine|olarak|style|transform|'
+        r'photoshop|remove|ekle|replace|arka|background|retouch|portrait|headshot|inpaint)\b',
+        low,
+    ):
+        return False
+    if re.match(r'^\s*ne\s+var\b', low) and not re.search(
+        r'\b(?:değiştir|düzenle|ekle|çıkar|sil|remove|add|edit)\b', low
+    ):
+        return False
+
+    # Strong multilingual edit / manipulation intent (paired with a source image by the caller)
+    if re.search(
+        r'\b(?:'
+        r'çiz|ciz|draw|paint|sketch|edit|düzenle|değiştir|modify|inpaint|outpaint|retouch|photoshop|'
+        r'remove|delete|erase|add|replace|swap|insert|cut\s+out|recolor|recolou?r|'
+        r'giydir|elbise|takım|tyakım|suit|ceket|jacket|wear|wearing|outfit|formal|'
+        r'olarak\s+çiz|üzerine|üstüne|üzerinde|'
+        r'bunun|buna|bunu|buna\s+göre|bu\s+foto|bu\s+resim|bu\s+fotoğraf|'
+        r'this\s+image|this\s+photo|this\s+picture|'
+        r'according\s+to|based\s+on\s+this|same\s+person|preserve\s+face|keep\s+face|'
+        r'change\s+(?:the\s+)?(?:background|hairstyle|hair|clothes|outfit|scene|colour|color|lighting)|'
+        r'(?:remove|delete)\s+(?:the\s+)?(?:background|bg|foreground|object|objects)|'
+        r'background\s+removal|\bbg\s+remove\b|remove\s+bg|remove\s+background|'
+        r'(?:turn|make|transform)\s+(?:this|it|him|her|that)\s+into|'
+        r'(?:professional|formal|business|cinematic)\s+(?:portrait|headshot|look|photo)|'
+        r'make\s+(?:it|him|her|this)\s+(?:more\s+)?(?:formal|professional|cinematic)|'
+        r'make\s+(?:him|her|them)\s+wear|put\s+(?:him|her|them)\s+in|'
+        r'daha\s+resmi|daha\s+sinematik|şimdi|'
+        r'(?:saç|hair)\s*(?:rengini|rengi|color|colour|style)?|'
+        r'arka\s*plan|arkaplan|ofis\s+yap|'
+        r'çıkar|sil|kaldır|erase|'
+        r'photorealistic\s+edit'
+        r')\b',
+        low,
+        re.I,
+    ):
+        return True
+
+    for ph in (
+        'arka plan',
+        'arkaplan',
+        'remove background',
+        'background remove',
+        'remove the background',
+        'takım elbise',
+        'üzerine ceket',
+        'üstüne ceket',
+        'edit this image',
+        'edit this photo',
+        'modify this photo',
+        'change the background',
+        'professional headshot',
+        'formal portrait',
+        'buna takım',
+        'bunu daha',
+        'bu fotoğrafa',
+        'bu resimde',
+        'bu adama',
+        'bu kadına',
+        'formal yap',
+        'daha resmi',
+        'pixar tarzı',
+        'ghibli',
+        'anime tarzı',
+        'anime yap',
+        'stüdyo ghibli',
+    ):
+        if ph in low:
+            return True
+
+    # Style / scene transfer on the attached photo (not pure VQA)
+    if re.search(
+        r'\b(?:'
+        r'pixar|ghibli|disney|anime|manga|cartoon\s+style|stylize|style\s*transfer|'
+        r'plajda|sahilde|at\s+the\s+beach|in\s+the\s+office|replace\s+(?:the\s+)?background|'
+        r'arka\s*plan[ıi]?\s+(?:değiştir|değiş|çevir|koy)|'
+        r'(?:make|turn)\s+it\s+(?:pixar|anime|cartoon)|'
+        r'(?:bunu|şunu)\s+(?:pixar|anime|çizgi\s+film)'
+        r')\b',
+        low,
+        re.I,
+    ):
+        return True
+
+    # Russian: dress / change / background
+    if re.search(
+        r'(?:^|[\s,.;!?])(?:измени|изменить|надень|смени|убери|добавь|удали|сделай|поменяй)\b',
+        t,
+        re.I,
+    ) or re.search(
+        r'\b(?:костюм|пиджак|фон|фона|портрет|лицо|одежд|фото|изображен)\w*\b',
+        t,
+        re.I,
+    ):
+        return True
+
+    # Arabic script: change / add / remove / background / image
+    if re.search(
+        r'[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]{3,}',
+        message_text or '',
+    ) and re.search(
+        r'(?:غيّر|غير|أضف|ازل|احذف|خلفية|صورة|شخص|ملابس|بدلة|إزالة)',
+        message_text or '',
+    ):
+        return True
+
+    return False
+
+
 def collect_attachment_kinds(
     files: list[dict[str, Any]] | None,
     messages: list[dict[str, Any]] | None,
@@ -255,8 +387,18 @@ def collect_attachment_kinds(
             kinds.add('image')
         elif ct.startswith('audio/') or ct in ('audio',):
             kinds.add('audio')
+    # Recent turns only (not full history): follow-up edits reference images from a few messages back.
     if messages:
-        for m in reversed(messages[-3:]):
+        tail = messages[-16:] if len(messages) > 16 else messages
+        for m in reversed(tail):
+            for f in m.get('files') or []:
+                if not isinstance(f, dict):
+                    continue
+                ct = (f.get('content_type') or f.get('type') or '').lower()
+                if f.get('type') == 'image' or ct.startswith('image/'):
+                    kinds.add('image')
+                elif ct.startswith('audio/'):
+                    kinds.add('audio')
             c = m.get('content')
             if isinstance(c, list):
                 for p in c:
@@ -270,11 +412,76 @@ def collect_attachment_kinds(
     return kinds
 
 
+_SUPPLEMENTAL_WEB_AFTER_URL_RE = re.compile(
+    r'(?:'
+    r'başka\s+kaynak|diğer\s+kaynak|ek\s+kaynak|karşılaştır|çapraz\s+kontrol|'
+    r'internetten\s+de|web\s*[\'’]?(?:de)?\s+ara|araştır(?:ıp)?|'
+    r'resmi\s+kaynak(?:ı|ları)?\s+bul|doğrula(?:y(?:ıp|arak))?|'
+    r'(?:also|additionally)\s+(?:search|verify|confirm)|cross[\s-]?check|'
+    r'other\s+sources|additional\s+sources'
+    r')',
+    re.IGNORECASE,
+)
+
+
+def supplemental_web_research_requested(message_text: str) -> bool:
+    """
+    URL sayfa metni enjekte edildi ama kullanıcı ek web araştırması da istiyor — web_search bastırma.
+    """
+    if not (message_text or '').strip():
+        return False
+    return bool(_SUPPLEMENTAL_WEB_AFTER_URL_RE.search(message_text))
+
+
+def wants_web_research_heavy_task(message_text: str) -> bool:
+    """
+    True when the user likely needs real web retrieval (links, official pages, verification, fresh facts).
+
+    Used by Auto text routing (bump complexity) and by should_inject_web_search_for_message (smart mode).
+    Keep in sync with URL-fetch flows: URL-only summarize should rely on fetch, not duplicate search.
+    """
+    t = (message_text or '').strip()
+    if not t:
+        return False
+    low = t.lower()
+
+    # Direct link / official source / registration intent (TR + EN)
+    if re.search(
+        r'(?:'
+        r'link\s*(?:ver|için|bul|atar\s*mısın|paylaş|gönder)|linki\s+ver|doğrudan\s+link|'
+        r'url\s+ver|adres\s+ver|hyperlink|'
+        r'resmi\s+(?:site|web|sayfa|kaynak|başvuru)|resm[iî]\s+siteden|'
+        r'official\s+(?:website|site|page|source)|primary\s+source|'
+        r'başvuru\s+(?:sayfası|linki|formu|ekranı)|kayıt\s+(?:sayfası|linki|formu)|'
+        r'admissions|enrollment|apply\s+online|application\s+link|'
+        r'nereden\s+başvur|nasıl\s+kayıt|kayıt\s+ol(?:ur)?um|where\s+to\s+apply|how\s+to\s+register|'
+        r'doğrula|kontrol\s+et|teyit\s+et|doğrulay|verify|fact[\s-]?check|cross[\s-]?check|'
+        r'son\s+durum|güncel\s+(?:bilgi|durum|veri|haber)|en\s+son\s+(?:bilgi|durum)|'
+        r'(?:bugün|şu\s*an|şu\s+an|right\s*now)\b|up[\s-]?to[\s-]?date|latest\s+(?:status|news|info)|'
+        r'(?:şu|bu)\s+kişinin\s+(?:sitesi|web\s*sitesi|resmi\s+sitesi)|'
+        r'find\s+(?:the\s+)?(?:official\s+)?website|official\s+URL'
+        r')',
+        low,
+        re.I,
+    ):
+        return True
+
+    # Loose keyword combos (avoid firing on every "site" mention)
+    if re.search(
+        r'\b(?:kaynak|source)\b.{0,80}\b(?:göster|bul|iste|ver|cite|link)\b',
+        message_text or '',
+        re.I,
+    ):
+        return True
+    return False
+
+
 def should_inject_web_search_for_message(
     *,
     message_text: str,
     attachments: set[str],
     input_mode: str | None,
+    research_grounded_image: bool = False,
 ) -> bool:
     """
     MWS: pipeline'a zorunlu web/RAG enjeksiyonu — çizim isteklerinde kapatılır;
@@ -290,6 +497,9 @@ def should_inject_web_search_for_message(
         input_mode=input_mode,
     )
     if modality == 'image_generation':
+        # Real-world draw requests need web facts before image gen (see image_grounding.py).
+        if research_grounded_image and mode != 'never':
+            return True
         return False
     if is_pure_image_draw_turn(message_text, attachments, input_mode):
         return False
@@ -359,6 +569,8 @@ def should_inject_web_search_for_message(
         re.I,
     ):
         return True
+    if wants_web_research_heavy_task(t_raw):
+        return True
     return False
 
 
@@ -367,6 +579,7 @@ def classify_task_modality(
     message_text: str,
     attachments: set[str],
     input_mode: str | None,
+    enable_image_edit: bool = False,
 ) -> tuple[Capability, str]:
     """
     Deterministic routing classification for **chat completions** (assistant text reply).
@@ -401,6 +614,10 @@ def classify_task_modality(
                 return 'export', 'export_with_image_attachment'
         except Exception:
             pass
+        # Prefer image edit/generation routing when enabled — otherwise Auto picks a vision model and
+        # downstream image_edits may never run for attached-photo edit requests.
+        if enable_image_edit and wants_image_edit_pipeline_turn(t):
+            return 'image_generation', 'image_edit_intent_with_attachment'
         return 'vision', 'image_attachment'
     # Önce görsel üretim: kod modeline düşmeden (ör. mesajda "python" geçse bile) çiz/üret niyeti yakalanır.
     if _wants_image_creation(t):
@@ -497,6 +714,13 @@ def is_pure_image_draw_turn(
     """
     True when this turn should only run image generation (no web/RAG/text follow-up).
     """
+    try:
+        from open_webui.utils.mws_gpt.image_grounding import wants_research_grounded_image_prompt
+
+        if wants_research_grounded_image_prompt(message_text or ''):
+            return False
+    except Exception:
+        pass
     mod, _ = classify_task_modality(
         message_text=message_text or '',
         attachments=attachments,

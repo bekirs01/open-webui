@@ -1643,6 +1643,67 @@ def get_images_from_messages(message_list):
     return images
 
 
+def get_stored_message_list_for_image_resolve(metadata: dict, user: UserModel) -> list:
+    """Chat history from DB so follow-up edit turns can resolve the last user image if the JSON payload omits it."""
+    chat_id = metadata.get('chat_id')
+    if not chat_id or not isinstance(chat_id, str) or chat_id.startswith('local:'):
+        return []
+    try:
+        chat = Chats.get_chat_by_id_and_user_id(chat_id, user.id)
+        if not chat:
+            return []
+        messages_map = chat.chat.get('history', {}).get('messages', {})
+        message_id = chat.chat.get('history', {}).get('currentId')
+        return get_message_list(messages_map, message_id)
+    except Exception:
+        return []
+
+
+def collect_image_urls_for_edit_request(form_data: dict, message_list: list) -> list[str]:
+    """
+    URLs for image_edits: prefer the incoming request body (new upload may not be persisted in DB yet).
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def add_url(u: str | None) -> None:
+        if not u or not isinstance(u, str) or u in seen:
+            return
+        seen.add(u)
+        out.append(u)
+
+    for m in reversed(form_data.get('messages') or []):
+        if m.get('role') != 'user':
+            continue
+        for f in m.get('files') or []:
+            if not isinstance(f, dict):
+                continue
+            ct = (f.get('content_type') or '').lower()
+            if f.get('type') == 'image' or ct.startswith('image/'):
+                add_url(f.get('url'))
+        c = m.get('content')
+        if isinstance(c, list):
+            for p in c:
+                if not isinstance(p, dict):
+                    continue
+                if p.get('type') == 'image_url':
+                    iu = p.get('image_url') or {}
+                    add_url(iu.get('url') if isinstance(iu, dict) else None)
+                elif p.get('type') == 'image':
+                    im = p.get('image')
+                    if isinstance(im, dict):
+                        add_url(im.get('url'))
+        if out:
+            return out[:6]
+
+    for group in get_images_from_messages(message_list):
+        for u in group:
+            add_url(u)
+        if out:
+            break
+    return out[:6]
+
+
 def get_image_urls(delta_images, request, metadata, user) -> list[str]:
     if not isinstance(delta_images, list):
         return []
@@ -1756,25 +1817,31 @@ async def chat_image_generation_handler(request: Request, form_data: dict, extra
         user_message = ''
 
     prompt = user_message
-    message_images = get_images_from_messages(message_list)
-
-    # Limit to first 2 sets of images
-    # We may want to change this in the future to allow more images
-    input_images = []
-    for idx, images in enumerate(message_images):
-        if idx >= 2:
-            break
-        for image in images:
-            input_images.append(image)
+    input_images = collect_image_urls_for_edit_request(form_data, message_list)
 
     system_message_content = ''
 
     if len(input_images) > 0 and request.app.state.config.ENABLE_IMAGE_EDIT:
-        # Edit image(s)
+        # Edit image(s) — structured English prompt for identity-preserving i2i (see image_prompt.build_mws_image_edit_prompt)
         try:
+            from open_webui.utils.mws_gpt.image_prompt import build_mws_image_edit_prompt
+            from open_webui.utils.mws_gpt.team_registry import pick_mws_image_edit_model_id
+
+            edit_prompt = build_mws_image_edit_prompt(prompt or '')
+            edit_form: dict = {'prompt': edit_prompt, 'image': input_images}
+            _em = pick_mws_image_edit_model_id(request)
+            if _em:
+                edit_form['model'] = _em
+            _esz = (os.environ.get('MWS_IMAGE_EDIT_SIZE') or '').strip()
+            if not _esz:
+                _esz = (getattr(request.app.state.config, 'IMAGE_EDIT_SIZE', None) or '') or ''
+            if not _esz or 'x' not in str(_esz):
+                _esz = (os.environ.get('MWS_IMAGE_DEFAULT_SIZE') or '1024x1024').strip()
+            if _esz and 'x' in _esz:
+                edit_form['size'] = _esz
             images = await image_edits(
                 request=request,
-                form_data=EditImageForm(**{'prompt': prompt, 'image': input_images}),
+                form_data=EditImageForm(**edit_form),
                 metadata={
                     'chat_id': metadata.get('chat_id', None),
                     'message_id': metadata.get('message_id', None),
@@ -1805,9 +1872,17 @@ async def chat_image_generation_handler(request: Request, form_data: dict, extra
             )
 
             system_message_content = (
-                '<context>The image has been edited and is shown above. Reply briefly in the same '
-                'natural language as the user\'s last message; do not mix languages or include random code.</context>'
+                '<context>The image has been edited and is shown above. Reply with ONE short sentence only '
+                'in the same language as the user\'s last message (e.g. acknowledgement of the edit). '
+                'Do not refuse, do not say you cannot edit images, do not ask for more details, '
+                'do not say information is missing, do not write long explanations or bullet lists.</context>'
             )
+            if images:
+                form_data['_mws_last_image_artifact'] = {
+                    'kind': 'image',
+                    'url': images[0].get('url') or '',
+                    'file_id': None,
+                }
         except Exception as e:
             log.debug(e)
 
@@ -1876,10 +1951,16 @@ async def chat_image_generation_handler(request: Request, form_data: dict, extra
         if not isinstance(prompt, str):
             prompt = str(prompt) if prompt else (user_message or '')
         try:
-            from open_webui.utils.mws_gpt.image_prompt import build_mws_image_prompt
+            from open_webui.utils.mws_gpt.image_prompt import (
+                build_mws_image_prompt,
+                get_prior_user_request_for_variation,
+            )
 
             if use_raw_prompt or form_data.get('_mws_image_pipeline'):
-                prompt = build_mws_image_prompt(user_message or prompt)
+                prior_img = get_prior_user_request_for_variation(
+                    form_data.get('messages') or [], user_message or ''
+                )
+                prompt = build_mws_image_prompt(user_message or prompt, previous_user_text=prior_img)
         except Exception as e:
             log.debug('[MWS] image prompt normalize: %s', e)
 
@@ -1891,10 +1972,28 @@ async def chat_image_generation_handler(request: Request, form_data: dict, extra
                     log.warning('set_image_model(%s): %s', mid_sel, e)
 
             img_form: dict = {'prompt': prompt}
+            # Quality-oriented defaults for MWS image pipeline (honest size; override via env)
+            _mws_sz = (os.environ.get('MWS_IMAGE_DEFAULT_SIZE') or '1024x1024').strip()
             if bool(form_data.get('mws_deep_thinking')):
-                deep_sz = (os.environ.get('MWS_DEEP_THINKING_IMAGE_SIZE') or '1024x1024').strip()
-                if deep_sz:
+                deep_sz = (os.environ.get('MWS_DEEP_THINKING_IMAGE_SIZE') or _mws_sz).strip()
+                if deep_sz and 'x' in deep_sz:
                     img_form['size'] = deep_sz
+            elif (
+                bool(form_data.get('_mws_image_pipeline'))
+                or bool(form_data.get('_mws_image_generation_model_id'))
+                or _pure_image_model(mid_sel)
+            ):
+                if _mws_sz and 'x' in _mws_sz:
+                    img_form['size'] = _mws_sz
+            try:
+                from open_webui.utils.mws_gpt.image_prompt import get_default_image_negative_prompt
+
+                if (os.environ.get('MWS_IMAGE_NEGATIVE_PROMPT', 'true') or 'true').lower() != 'false':
+                    np = get_default_image_negative_prompt()
+                    if np:
+                        img_form['negative_prompt'] = np
+            except Exception:
+                pass
 
             images = await image_generations(
                 request=request,
@@ -2311,13 +2410,17 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 log.debug('merge incoming user message after DB load: %s', e)
 
             try:
-                from open_webui.utils.mws_gpt.artifact_resolver import extract_last_artifact_for_export
-
-                form_data['_mws_last_artifact'] = extract_last_artifact_for_export(
-                    list(form_data.get('messages') or [])
+                from open_webui.utils.mws_gpt.artifact_resolver import (
+                    extract_last_artifact_for_export,
+                    extract_last_image_artifact_for_export,
                 )
+
+                _snap = list(form_data.get('messages') or [])
+                form_data['_mws_last_artifact'] = extract_last_artifact_for_export(_snap)
+                form_data['_mws_last_image_artifact'] = extract_last_image_artifact_for_export(_snap)
             except Exception:
                 form_data['_mws_last_artifact'] = None
+                form_data['_mws_last_image_artifact'] = None
 
             # Inject image files into content as image_url parts (mirrors frontend logic)
             for message in form_data['messages']:
@@ -2342,6 +2445,16 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                         ]
                 # Strip files field — it's been incorporated into content
                 message.pop('files', None)
+
+    try:
+        from open_webui.utils.mws_gpt.artifact_resolver import extract_last_image_artifact_for_export
+
+        if form_data.get('_mws_last_image_artifact') is None:
+            form_data['_mws_last_image_artifact'] = extract_last_image_artifact_for_export(
+                list(form_data.get('messages') or [])
+            )
+    except Exception:
+        pass
 
     # Process messages with OR-aligned output items for clean LLM messages
     form_data['messages'] = process_messages_with_output(form_data.get('messages', []))
@@ -2548,21 +2661,41 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         import os
 
         from open_webui.utils.mws_gpt.active import is_mws_gpt_active
+        from open_webui.utils.mws_gpt.image_grounding import wants_research_grounded_image_prompt
         from open_webui.utils.mws_gpt.registry import (
             collect_attachment_kinds,
             extract_last_user_text,
             should_inject_web_search_for_message,
+            wants_image_edit_pipeline_turn,
         )
         from open_webui.utils.mws_gpt.team_registry import get_primary_capability
         from open_webui.utils.url_page_context import should_suppress_auto_web_search_after_url_injection
 
         mid = (model.get('id') or form_data.get('model') or '').strip()
+        _last_user = extract_last_user_text(form_data.get('messages') or [])
+        _att = collect_attachment_kinds(form_data.get('files'), form_data.get('messages'))
+        _stored_ml = get_stored_message_list_for_image_resolve(metadata, user)
+        _edit_src_urls = collect_image_urls_for_edit_request(form_data, _stored_ml)
         if form_data.get('_mws_image_pipeline') or (
             mid and get_primary_capability(mid) == 'image_generation'
         ):
             features['image_generation'] = True
-        _last_user = extract_last_user_text(form_data.get('messages') or [])
-        _att = collect_attachment_kinds(form_data.get('files'), form_data.get('messages'))
+        elif (
+            getattr(request.app.state.config, 'ENABLE_IMAGE_EDIT', False)
+            and wants_image_edit_pipeline_turn(_last_user)
+            and (
+                'image' in _att
+                or (len(_edit_src_urls) > 0)
+            )
+        ):
+            # Source image in this turn, chat JSON, or DB + edit intent -> image_edits (not vision-only chat)
+            features['image_generation'] = True
+            form_data['_mws_image_edit_intent'] = True
+        _research_grounded_img = wants_research_grounded_image_prompt(_last_user) and not (
+            wants_image_edit_pipeline_turn(_last_user)
+            and (('image' in _att) or (len(_edit_src_urls) > 0))
+        )
+        form_data['_mws_research_grounded_image'] = _research_grounded_img
         _input_mode = form_data.get('input_mode') or (
             (metadata.get('params') or {}).get('input_mode')
         )
@@ -2585,6 +2718,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 message_text=_last_user,
                 attachments=_att,
                 input_mode=_input_mode,
+                research_grounded_image=_research_grounded_img,
             )
             or (
                 _deep
@@ -2594,9 +2728,19 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             )
         ):
             features['web_search'] = True
-        # Saf çizim: istemci web_search gönderse bile kaynak/RAG yolu açılmasın
-        if form_data.get('_mws_pure_draw_intent') or form_data.get('_mws_image_pipeline'):
+        # Saf çizim: istemci web_search gönderse bile kaynak/RAG yolu açılmasın — real-world grounded draw needs web first
+        if (form_data.get('_mws_pure_draw_intent') or form_data.get('_mws_image_pipeline')) and not _research_grounded_img:
             features['web_search'] = False
+        # Opsiyonel: web araçlarının native function calling ile enjekte edilmesi (search_web / fetch_url).
+        # Varsayılan kapalı — ortamda MWS_NATIVE_FC_WHEN_WEB=true ile açılır.
+        if (
+            features.get('web_search')
+            and os.environ.get('MWS_NATIVE_FC_WHEN_WEB', '').lower() == 'true'
+        ):
+            _mp = metadata.setdefault('params', {})
+            if _mp.get('function_calling') != 'native':
+                _mp['function_calling'] = 'native'
+                log.info('[MWS] function_calling -> native (MWS_NATIVE_FC_WHEN_WEB for web_search tools)')
     except Exception:
         pass
     extra_params['__features__'] = features
@@ -2621,15 +2765,31 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             ):
                 form_data = await chat_memory_handler(request, form_data, extra_params, user)
 
-        if 'image_generation' in features and features['image_generation']:
-            # Skip forced image generation when native FC is enabled - model can use generate_image tool
-            if metadata.get('params', {}).get('function_calling') != 'native':
-                form_data = await chat_image_generation_handler(request, form_data, extra_params, user)
+        _grounded_bundle = (
+            bool(form_data.get('_mws_research_grounded_image'))
+            and features.get('web_search')
+            and features.get('image_generation')
+            and metadata.get('params', {}).get('function_calling') != 'native'
+        )
+        if _grounded_bundle:
+            from open_webui.utils.mws_gpt.image_grounding import inject_web_research_text_into_last_user_message
 
-        if 'web_search' in features and features['web_search']:
-            # Skip forced RAG web search when native FC is enabled - model can use web_search tool
-            if metadata.get('params', {}).get('function_calling') != 'native':
-                form_data = await chat_web_search_handler(request, form_data, extra_params, user)
+            form_data = await chat_web_search_handler(request, form_data, extra_params, user)
+            try:
+                await inject_web_research_text_into_last_user_message(request, form_data, user)
+            except Exception as e:
+                log.debug('[MWS] research-grounded image inject: %s', e)
+            form_data = await chat_image_generation_handler(request, form_data, extra_params, user)
+        else:
+            if 'image_generation' in features and features['image_generation']:
+                # Skip forced image generation when native FC is enabled - model can use generate_image tool
+                if metadata.get('params', {}).get('function_calling') != 'native':
+                    form_data = await chat_image_generation_handler(request, form_data, extra_params, user)
+
+            if 'web_search' in features and features['web_search']:
+                # Skip forced RAG web search when native FC is enabled - model can use web_search tool
+                if metadata.get('params', {}).get('function_calling') != 'native':
+                    form_data = await chat_web_search_handler(request, form_data, extra_params, user)
 
         if 'code_interpreter' in features and features['code_interpreter']:
             engine = getattr(request.app.state.config, 'CODE_INTERPRETER_ENGINE', 'pyodide')
@@ -3068,6 +3228,15 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     except Exception:
         pass
 
+    # Tek dil / script kilidi: son kullanıcı mesajına göre (tüm sohbet tamamlamaları)
+    if not form_data.get('_mws_export_completion'):
+        try:
+            from open_webui.utils.output_language_guard import inject_output_language_lock
+
+            form_data['messages'] = inject_output_language_lock(form_data.get('messages') or [])
+        except Exception as e:
+            log.debug('output language lock: %s', e)
+
     # Merge any duplicate system messages into a single message at position 0
     # to prevent template parsing errors with strict chat templates (e.g. Qwen)
     form_data['messages'] = merge_system_messages(form_data.get('messages', []))
@@ -3435,6 +3604,16 @@ async def non_streaming_chat_response_handler(response, ctx):
                 content = response_data['choices'][0]['message']['content']
 
                 if content:
+                    try:
+                        from open_webui.utils.output_language_guard import sanitize_leaked_scripts
+
+                        _fd = ctx.get('form_data') or {}
+                        _lut = extract_last_user_text(_fd.get('messages') or [])
+                        if isinstance(content, str):
+                            content = sanitize_leaked_scripts(content, _lut) or content
+                            response_data['choices'][0]['message']['content'] = content
+                    except Exception as e:
+                        log.debug('output language sanitize: %s', e)
                     await event_emitter(
                         {
                             'type': 'chat:completion',
@@ -4952,6 +5131,15 @@ async def streaming_chat_response_handler(response, ctx):
                 for item in output:
                     if item.get('status') == 'in_progress':
                         item['status'] = 'completed'
+
+                try:
+                    from open_webui.utils.output_language_guard import sanitize_or_aligned_output_items
+
+                    sanitize_or_aligned_output_items(
+                        output, extract_last_user_text(form_data.get('messages') or [])
+                    )
+                except Exception as e:
+                    log.debug('sanitize streaming output: %s', e)
 
                 title = Chats.get_chat_title_by_id(metadata['chat_id'])
                 data = {

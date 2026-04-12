@@ -1788,7 +1788,7 @@ Generate a concise, 3-5 word title with an emoji summarizing the chat history.
 ### Guidelines:
 - The title should clearly represent the main theme or subject of the conversation.
 - Use emojis that enhance understanding of the topic, but avoid quotation marks or special formatting.
-- Write the title in the chat's primary language; default to English if multilingual.
+- Write the title in exactly ONE language: the same as the user's last message (match Turkish, English, Russian, etc.). Do not mix scripts or languages unless the user explicitly asked for that.
 - Prioritize accuracy over excessive creativity; keep it clear and simple.
 - Your entire response must consist solely of the JSON object, without any introductory or concluding text.
 - The output must be a single, raw JSON object, without any markdown code fences or other encapsulating text.
@@ -1820,7 +1820,7 @@ Generate 1-3 broad tags categorizing the main themes of the chat history, along 
 - Start with high-level domains (e.g. Science, Technology, Philosophy, Arts, Politics, Business, Health, Sports, Entertainment, Education)
 - Consider including relevant subfields/subdomains if they are strongly represented throughout the conversation
 - If content is too short (less than 3 messages) or too diverse, use only ["General"]
-- Use the chat's primary language; default to English if multilingual
+- Use exactly ONE language for all tags: the same as the user's last message. Do not mix languages or foreign scripts.
 - Prioritize accuracy over specificity
 
 ### Output:
@@ -1871,7 +1871,7 @@ Suggest 3-5 relevant follow-up questions or prompts that the user might naturall
 - Make questions concise, clear, and directly related to the discussed topic(s).
 - Only suggest follow-ups that make sense given the chat content and do not repeat what was already covered.
 - If the conversation is very short or not specific, suggest more general (but relevant) follow-ups the user might ask.
-- Use the conversation's primary language; default to English if multilingual.
+- Use exactly ONE language for every follow-up: the same as the user's last message (Turkish, English, Russian, etc.). Do not mix scripts or paste foreign-language fragments.
 - Response must be a JSON object with a "follow_ups" key containing an array of strings, no extra text or formatting.
 ### Output:
 JSON format: { "follow_ups": ["Question 1?", "Question 2?", "Question 3?"] }
@@ -1924,6 +1924,7 @@ Analyze the chat history to determine the necessity of generating search queries
 ### Guidelines:
 - Respond **EXCLUSIVELY** with a JSON object. Any form of extra commentary, explanation, or additional text is strictly prohibited.
 - When generating search queries, respond in the format: { "queries": ["query1", "query2"] }, ensuring each query is distinct, concise, and relevant to the topic.
+- Write every query in exactly ONE language: the same as the user's last message (match Turkish, English, Russian, etc.). Do not mix languages or scripts in a single query string.
 - If and only if it is entirely certain that no useful results can be retrieved by a search, return: { "queries": [] }.
 - Err on the side of suggesting search queries if there is **any chance** they might provide useful or updated information.
 - Be concise and focused on composing high-quality search queries, avoiding unnecessary elaboration, commentary, or assumptions.
@@ -2999,7 +3000,7 @@ Respond to the user query using the provided context, incorporating inline citat
 ### Guidelines:
 - If you don't know the answer, clearly state that.
 - If uncertain, ask the user for clarification.
-- Respond in the same language as the user's query.
+- Respond in exactly ONE language: the same as the user's query (e.g. Turkish, English, Russian). Do not mix languages or scripts; do not paste raw non-query-language snippets from context — paraphrase or translate into the reply language.
 - If the context is unreadable or of poor quality, inform the user and provide the best possible answer.
 - If the answer isn't present in the context but you possess the knowledge, explain this to the user and provide the answer using your own understanding.
 - **Only include inline citations using [id] (e.g., [1], [2]) when the <source> tag includes an id attribute.**

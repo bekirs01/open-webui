@@ -473,21 +473,42 @@ def upload_image(request, image_data, content_type, metadata, user, db=None):
         user=user,
     )
 
+    url = None
     if file_item and file_item.id:
-        # If chat_id and message_id are provided in metadata, link the file to the chat message
+        url = str(request.app.url_path_for('get_file_content_by_id', id=file_item.id))
+        # Link file to chat (SQL) AND mirror into chat JSON `messages[id].files` so reload/export
+        # can resolve the last generated image (extract_last_artifact_for_export / follow-up "pdf yap").
         chat_id = metadata.get('chat_id')
         message_id = metadata.get('message_id')
-
         if chat_id and message_id:
-            Chats.insert_chat_files(
-                chat_id=chat_id,
-                message_id=message_id,
-                file_ids=[file_item.id],
-                user_id=user.id,
-                db=db,
-            )
+            try:
+                Chats.insert_chat_files(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    file_ids=[file_item.id],
+                    user_id=user.id,
+                    db=db,
+                )
+            except Exception as e:
+                log.debug('insert_chat_files after image upload: %s', e)
+            try:
+                Chats.add_message_files_by_id_and_message_id(
+                    chat_id,
+                    message_id,
+                    [
+                        {
+                            'type': 'image',
+                            'url': url,
+                            'id': file_item.id,
+                            'content_type': content_type or 'image/png',
+                        }
+                    ],
+                )
+            except Exception as e:
+                log.warning('add_message_files_by_id_and_message_id after image upload: %s', e)
 
-    url = request.app.url_path_for('get_file_content_by_id', id=file_item.id)
+    if file_item and file_item.id and url is None:
+        url = str(request.app.url_path_for('get_file_content_by_id', id=file_item.id))
     return file_item, url
 
 
@@ -567,6 +588,8 @@ async def image_generations(
                     else request.app.state.config.IMAGES_OPENAI_API_PARAMS
                 ),
             }
+            if form_data.negative_prompt is not None:
+                data['negative_prompt'] = form_data.negative_prompt
 
             # Use asyncio.to_thread for the requests.post call
             r = await asyncio.to_thread(

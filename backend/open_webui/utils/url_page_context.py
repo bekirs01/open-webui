@@ -25,7 +25,7 @@ from open_webui.utils.misc import (
     get_content_from_message,
     update_message_content,
 )
-from open_webui.utils.mws_gpt.registry import extract_last_user_text
+from open_webui.utils.mws_gpt.registry import extract_last_user_text, supplemental_web_research_requested
 
 log = logging.getLogger(__name__)
 
@@ -92,6 +92,8 @@ def should_suppress_auto_web_search_after_url_injection(form_data: dict, last_us
     if not form_data.get('_chat_url_page_context_injected'):
         return False
     if explicit_broad_web_search_requested(last_user_text or ''):
+        return False
+    if supplemental_web_research_requested(last_user_text or ''):
         return False
     return True
 
