@@ -27,7 +27,8 @@
 		selectedFolder,
 		WEBUI_NAME,
 		sidebarWidth,
-		activeChatIds
+		activeChatIds,
+		requestCollabModal
 	} from '$lib/stores';
 	import { onMount, getContext, tick, onDestroy } from 'svelte';
 
@@ -64,6 +65,7 @@
 	import Sidebar from '../icons/Sidebar.svelte';
 	import PinnedModelList from './Sidebar/PinnedModelList.svelte';
 	import Note from '../icons/Note.svelte';
+	import Users from '../icons/Users.svelte';
 	import { slide } from 'svelte/transition';
 	import HotkeyHint from '../common/HotkeyHint.svelte';
 
@@ -767,6 +769,26 @@
 					</Tooltip>
 				</div>
 
+				<div>
+					<Tooltip content={$i18n.t('Shared Chat')} placement="right">
+						<button
+							class=" cursor-pointer flex rounded-xl hover:bg-gray-100 dark:hover:bg-gray-850 transition group"
+							on:click={(e) => {
+								e.stopImmediatePropagation();
+								e.preventDefault();
+
+								requestCollabModal();
+							}}
+							draggable="false"
+							aria-label={$i18n.t('Shared Chat')}
+						>
+							<div class=" self-center flex items-center justify-center size-9">
+								<Users className="size-4.5" strokeWidth="2" />
+							</div>
+						</button>
+					</Tooltip>
+				</div>
+
 				{#if ($config?.features?.enable_notes ?? false) && ($user?.role === 'admin' || ($user?.permissions?.features?.notes ?? true))}
 					<div class="">
 						<Tooltip content={$i18n.t('Notes')} placement="right">
@@ -998,6 +1020,29 @@
 								<div class=" self-center text-sm font-primary">{$i18n.t('Search')}</div>
 							</div>
 							<HotkeyHint name="search" className=" group-hover:visible invisible" />
+						</button>
+					</div>
+
+					<div class="px-[0.4375rem] flex justify-center text-gray-800 dark:text-gray-200">
+						<button
+							id="sidebar-collab-button"
+							class="group grow flex items-center space-x-3 rounded-2xl px-2.5 py-2 hover:bg-gray-100 dark:hover:bg-gray-900 transition outline-none"
+							on:click={() => {
+								requestCollabModal();
+								if ($mobile) {
+									showSidebar.set(false);
+								}
+							}}
+							draggable="false"
+							aria-label={$i18n.t('Shared Chat')}
+						>
+							<div class="self-center">
+								<Users className="size-4.5" strokeWidth="2" />
+							</div>
+
+							<div class="flex flex-1 self-center translate-y-[0.5px]">
+								<div class=" self-center text-sm font-primary">{$i18n.t('Shared Chat')}</div>
+							</div>
 						</button>
 					</div>
 

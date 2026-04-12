@@ -46,7 +46,9 @@
 		selectedTerminalId,
 		showFileNavPath,
 		showFileNavDir,
-		chatRequestQueues
+		chatRequestQueues,
+		collabRemoteHandler,
+		collabInitNewChatRequest
 	} from '$lib/stores';
 
 	import { WEBUI_API_BASE_URL } from '$lib/constants';
@@ -105,6 +107,7 @@
 	import MessageInput from '$lib/components/chat/MessageInput.svelte';
 	import Messages from '$lib/components/chat/Messages.svelte';
 	import Navbar from '$lib/components/chat/Navbar.svelte';
+	import CollabSessionBar from '$lib/components/chat/CollabSessionBar.svelte';
 	import ChatControls from './ChatControls.svelte';
 	import EventConfirmDialog from '../common/ConfirmDialog.svelte';
 	import Placeholder from './Placeholder.svelte';
@@ -112,6 +115,13 @@
 	import NotificationToast from '../NotificationToast.svelte';
 	import Spinner from '../common/Spinner.svelte';
 	import Tooltip from '../common/Tooltip.svelte';
+	import {
+		broadcastAiResponse,
+		broadcastUserMessage,
+		getCollabRoomId,
+		getCollabSenderId,
+		isCollabActive
+	} from '$lib/collab.js';
 	import Sidebar from '../icons/Sidebar.svelte';
 	import Image from '../common/Image.svelte';
 	import { getBanners } from '$lib/apis/configs';
@@ -1687,6 +1697,60 @@
 		}
 	};
 
+	const handleCollabRemote = async (data: Record<string, unknown>) => {
+		if (!data || typeof data !== 'object') return;
+		const modelId = selectedModels[0];
+		if (!modelId || modelId === '' || !$models.find((m) => m.id === modelId)) return;
+
+		if (data.type === 'chat_message') {
+			const senderId = data.senderId;
+			if (typeof senderId === 'string' && senderId === getCollabSenderId()) return;
+			const text = typeof data.text === 'string' ? data.text : '';
+			const ts =
+				typeof data.timestamp === 'number'
+					? Math.floor(data.timestamp / 1000)
+					: Math.floor(Date.now() / 1000);
+			await addMessages({
+				modelId,
+				parentId: history.currentId,
+				messages: [
+					{
+						role: 'user',
+						content: text,
+						timestamp: ts,
+						collabSenderLabel: 'Друг'
+					}
+				]
+			});
+		} else if (data.type === 'ai_response') {
+			const text = typeof data.text === 'string' ? data.text : '';
+			const ts =
+				typeof data.timestamp === 'number'
+					? Math.floor(data.timestamp / 1000)
+					: Math.floor(Date.now() / 1000);
+			await addMessages({
+				modelId,
+				parentId: history.currentId,
+				messages: [
+					{
+						role: 'assistant',
+						content: text,
+						timestamp: ts,
+						done: true,
+						collabSenderLabel: 'Друг'
+					}
+				]
+			});
+		}
+	};
+
+	onMount(() => {
+		collabRemoteHandler.set(handleCollabRemote);
+		return () => {
+			collabRemoteHandler.set(null);
+		};
+	});
+
 	const chatCompletionEventHandler = async (data, message, chatId) => {
 		const {
 			id,
@@ -1772,6 +1836,13 @@
 
 		if (done) {
 			message.done = true;
+
+			if (isCollabActive()) {
+				const roomId = getCollabRoomId();
+				if (roomId) {
+					broadcastAiResponse(roomId, removeAllDetails(message.content ?? ''));
+				}
+			}
 
 			if ($settings.responseAutoCopy) {
 				copyToClipboard(message.content);
@@ -1998,6 +2069,13 @@
 		saveSessionSelectedModels();
 
 		await sendMessage(history, userMessageId, { newChat: true });
+
+		if (isCollabActive()) {
+			const roomId = getCollabRoomId();
+			if (roomId) {
+				broadcastUserMessage(roomId, effectivePrompt);
+			}
+		}
 	};
 
 	const sendMessage = async (
@@ -2563,6 +2641,13 @@
 		}
 
 		await sendMessage(history, userMessageId);
+
+		if (isCollabActive()) {
+			const roomId = getCollabRoomId();
+			if (roomId) {
+				broadcastUserMessage(roomId, userPrompt);
+			}
+		}
 	};
 
 	const regenerateResponse = async (message, suggestionPrompt = null) => {
@@ -2722,6 +2807,32 @@
 		return _chatId;
 	};
 
+	/** Вход в комнату коллаба: новый пустой чат + запись в БД (как при первом сообщении) */
+	/** Всегда с 0: после `goto('/')` монтируется новый Chat, а store уже увеличен — иначе v<=lastSeen и коллбек не сработает */
+	let lastSeenCollabInitReq = 0;
+	const collabInitNewChatUnsub = collabInitNewChatRequest.subscribe((v) => {
+		if (v <= lastSeenCollabInitReq) return;
+		lastSeenCollabInitReq = v;
+		void (async () => {
+			try {
+				await initNewChat();
+				if (!$temporaryChatEnabled) {
+					await initChatHandler(history);
+				}
+			} catch (e) {
+				console.error('collab init chat', e);
+				toast.error($i18n.t('Error'));
+			} finally {
+				lastSeenCollabInitReq = 0;
+				collabInitNewChatRequest.set(0);
+			}
+		})();
+	});
+
+	onDestroy(() => {
+		collabInitNewChatUnsub();
+	});
+
 	const saveChatHandler = async (_chatId, history) => {
 		if ($chatId == _chatId) {
 			if (!$temporaryChatEnabled) {
@@ -2862,6 +2973,9 @@
 			<PaneGroup direction="horizontal" class="w-full h-full">
 				<Pane defaultSize={50} minSize={30} class="h-full flex relative max-w-full flex-col">
 					<FilesOverlay show={dragged} />
+
+					<CollabSessionBar />
+
 					<Navbar
 						bind:this={navbarElement}
 						chat={{

@@ -91,6 +91,20 @@ export const sidebarWidth = writable(260);
 
 export const showSidebar = writable(false);
 export const showSearch = writable(false);
+/** Incremented from the sidebar to open the shared real-time (collab) chat modal */
+export const collabModalTrigger = writable(0);
+export function requestCollabModal() {
+	collabModalTrigger.update((n) => n + 1);
+}
+/** Bumped after joining a collab room so `Chat.svelte` runs `initNewChat()` (fresh session on `/`) */
+export const collabInitNewChatRequest = writable(0);
+export function requestCollabInitNewChat() {
+	collabInitNewChatRequest.update((n) => n + 1);
+}
+/** Set by `Chat.svelte` while mounted; used by `CollabRoom` in the app layout for message injection */
+export const collabRemoteHandler: Writable<
+	((data: Record<string, unknown>) => void | Promise<void>) | null
+> = writable(null);
 export const showSettings = writable(false);
 export const showShortcuts = writable(false);
 export const showArchivedChats = writable(false);
