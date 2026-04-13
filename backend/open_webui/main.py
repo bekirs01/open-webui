@@ -70,6 +70,7 @@ from open_webui.socket.main import (
     get_models_in_use,
 )
 from open_webui.routers import (
+    agent_workflows,
     analytics,
     audio,
     images,
@@ -1520,6 +1521,7 @@ app.include_router(openai.router, prefix='/openai', tags=['openai'])
 
 app.include_router(pipelines.router, prefix='/api/v1/pipelines', tags=['pipelines'])
 app.include_router(tasks.router, prefix='/api/v1/tasks', tags=['tasks'])
+app.include_router(agent_workflows.router, prefix='/api/v1/agent-workflows', tags=['agent-workflows'])
 app.include_router(images.router, prefix='/api/v1/images', tags=['images'])
 
 app.include_router(audio.router, prefix='/api/v1/audio', tags=['audio'])

@@ -848,7 +848,11 @@
 		const handleVisibilityChange = () => {
 			if (document.visibilityState === 'visible') {
 				isLastActiveTab.set(true); // This tab is now the active tab
-				bc.postMessage('active'); // Notify other tabs that this tab is active
+				try {
+					bc.postMessage('active'); // Notify other tabs that this tab is active
+				} catch {
+					// BroadcastChannel may already be closed (navigation / HMR / duplicate layout)
+				}
 
 				// Check token expiry when the tab becomes active
 				checkTokenExpiry();

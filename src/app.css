@@ -364,6 +364,18 @@ input[type='number'] {
 	@apply stroke-gray-600 dark:stroke-gray-500;
 }
 
+/* Выбранная связь — видимое выделение (xyflow вешает .selected на g) */
+.svelte-flow__edge.selected path.svelte-flow__edge-path {
+	stroke: #10b981 !important;
+	stroke-width: 3px !important;
+	filter: drop-shadow(0 0 4px rgba(16, 185, 129, 0.45));
+}
+
+.dark .svelte-flow__edge.selected path.svelte-flow__edge-path {
+	stroke: #34d399 !important;
+	filter: drop-shadow(0 0 5px rgba(52, 211, 153, 0.5));
+}
+
 .bg-gray-950-90 {
 	background-color: rgba(var(--color-gray-950, #0d0d0d), 0.9);
 }

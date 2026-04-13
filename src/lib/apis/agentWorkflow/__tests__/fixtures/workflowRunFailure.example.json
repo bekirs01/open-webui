@@ -1,0 +1,11 @@
+{
+	"ok": false,
+	"final": "",
+	"finalByNode": {},
+	"order": ["tr", "bad"],
+	"results": {},
+	"logs": [],
+	"failedNodeId": "bad",
+	"error": "HTTP Request node: url is empty after substitution",
+	"partialResults": {}
+}

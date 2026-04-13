@@ -1,0 +1,11 @@
+{
+	"ok": true,
+	"final": "### `ta`\n\nA:hello\n\n### `tb`\n\nB:hello\n",
+	"finalByNode": {
+		"ta": "{\"$wf\":1,\"items\":[{\"json\":{\"output\":\"A:hello\",\"kind\":\"transform\",\"itemIndex\":0}}],\"text\":\"A:hello\"}",
+		"tb": "{\"$wf\":1,\"items\":[{\"json\":{\"output\":\"B:hello\",\"kind\":\"transform\",\"itemIndex\":0}}],\"text\":\"B:hello\"}"
+	},
+	"order": ["tr", "ta", "tb"],
+	"results": {},
+	"logs": []
+}

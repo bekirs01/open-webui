@@ -827,6 +827,43 @@
 						</Tooltip>
 					</div>
 				{/if}
+
+				{#if $user !== undefined && $user !== null}
+					<div class="">
+						<Tooltip content={$i18n.t('Agent workflows')} placement="right">
+							<a
+								class=" cursor-pointer flex rounded-xl hover:bg-gray-100 dark:hover:bg-gray-850 transition group"
+								href="/agent-workflow"
+								on:click={async (e) => {
+									e.stopImmediatePropagation();
+									e.preventDefault();
+
+									goto('/agent-workflow');
+									itemClickHandler();
+								}}
+								draggable="false"
+								aria-label={$i18n.t('Agent workflows')}
+							>
+								<div class=" self-center flex items-center justify-center size-9">
+									<svg
+										xmlns="http://www.w3.org/2000/svg"
+										fill="none"
+										viewBox="0 0 24 24"
+										stroke-width="1.5"
+										stroke="currentColor"
+										class="size-4.5"
+									>
+										<path
+											stroke-linecap="round"
+											stroke-linejoin="round"
+											d="M7.5 14.25v2.25m3-4.5v4.5m3-6.75v6.75m3-9v9M6 20.25h12A2.25 2.25 0 0 0 20.25 18V6A2.25 2.25 0 0 0 18 3.75H6A2.25 2.25 0 0 0 3.75 6v12A2.25 2.25 0 0 0 6 20.25Z"
+										/>
+									</svg>
+								</div>
+							</a>
+						</Tooltip>
+					</div>
+				{/if}
 			</div>
 		</button>
 
@@ -1051,6 +1088,40 @@
 
 								<div class="flex self-center translate-y-[0.5px]">
 									<div class=" self-center text-sm font-primary">{$i18n.t('Workspace')}</div>
+								</div>
+							</a>
+						</div>
+					{/if}
+
+					{#if $user !== undefined && $user !== null}
+						<div class="px-[0.4375rem] flex justify-center text-gray-800 dark:text-gray-200">
+							<a
+								id="sidebar-agent-workflow-button"
+								class="grow flex items-center space-x-3 rounded-2xl px-2.5 py-2 hover:bg-gray-100 dark:hover:bg-gray-900 transition"
+								href="/agent-workflow"
+								on:click={itemClickHandler}
+								draggable="false"
+								aria-label={$i18n.t('Agent workflows')}
+							>
+								<div class="self-center">
+									<svg
+										xmlns="http://www.w3.org/2000/svg"
+										fill="none"
+										viewBox="0 0 24 24"
+										stroke-width="2"
+										stroke="currentColor"
+										class="size-4.5"
+									>
+										<path
+											stroke-linecap="round"
+											stroke-linejoin="round"
+											d="M7.5 14.25v2.25m3-4.5v4.5m3-6.75v6.75m3-9v9M6 20.25h12A2.25 2.25 0 0 0 20.25 18V6A2.25 2.25 0 0 0 18 3.75H6A2.25 2.25 0 0 0 3.75 6v12A2.25 2.25 0 0 0 6 20.25Z"
+										/>
+									</svg>
+								</div>
+
+								<div class="flex self-center translate-y-[0.5px]">
+									<div class=" self-center text-sm font-primary">{$i18n.t('Agent workflows')}</div>
 								</div>
 							</a>
 						</div>

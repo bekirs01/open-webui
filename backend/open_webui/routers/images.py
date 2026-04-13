@@ -532,6 +532,8 @@ async def image_generations(
     metadata = metadata or {}
 
     model = get_image_model(request)
+    if form_data.model:
+        model = form_data.model
 
     r = None
     try:
