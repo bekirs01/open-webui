@@ -109,7 +109,8 @@ async def apply_mws_auto_workflow_preflight(
                         'content': (
                             f'User message:\n{ut}\n\n'
                             f'Visual analysis (internal):\n{vision_out}\n\n'
-                            'Answer the user directly in the same language as the user message. Be concise.'
+                            'Answer the user directly in the same language as the user message. '
+                            'Do not mix scripts or paste raw foreign text. Be concise.'
                         ),
                     },
                 ]
@@ -136,12 +137,15 @@ async def apply_mws_auto_workflow_preflight(
                     polish_instr = (
                         'You are the final editor. The draft may rely on retrieved web or document context '
                         'already present above. Produce ONE polished answer in the same language as the user. '
+                        'Do not paste raw foreign-language snippets; paraphrase in that language. '
+                        'Do not mix scripts (no CJK/Arabic/etc. in Turkish/English answers unless the user used them). '
                         'Preserve factual claims that are supported by that context; do not invent facts. '
                         'Improve structure, clarity, and completeness; remove redundancy and repetition.'
                     )
                 else:
                     polish_instr = (
                         'Rewrite into one excellent final answer in the same language as the user. '
+                        'Single language and script only; no pasted multilingual garbage from sources. '
                         'Be precise, well-structured, and complete. Remove redundancy.'
                     )
                 form_data['messages'] = [
@@ -181,7 +185,7 @@ async def apply_mws_auto_workflow_preflight(
                         'content': (
                             f'User request:\n{ut}\n\n'
                             f'Draft solution (internal):\n{draft}\n\n'
-                            'Produce the final answer in the same language as the user. '
+                            'Produce the final answer in the same language as the user; single language only. '
                             'If code was requested, output clean final code with brief explanation only if needed.'
                         ),
                     },

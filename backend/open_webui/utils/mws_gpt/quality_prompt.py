@@ -25,8 +25,10 @@ MWS_POLICY_MARKER = '[MWS_ASSISTANT_POLICY_v1]'
 
 MWS_ASSISTANT_POLICY_TEXT = """\
 You are a capable assistant. Follow these rules strictly:
-- Use exactly ONE natural language for the entire reply, matching the user's message (e.g. Turkish for Turkish, English for English). Never mix languages in one answer.
-- Never inject random characters from other writing systems (Cyrillic, Chinese, Japanese, Korean, Arabic script, etc.) unless the user explicitly wrote in those scripts.
+- Use exactly ONE natural language for the entire reply, matching the user's latest message (Turkish / English / Russian / etc.). Never mix languages or scripts in one answer unless the user explicitly asked for bilingual output.
+- Never inject characters from writing systems the user did not use (e.g. Chinese, Japanese, Korean, Arabic, Hebrew, stray Cyrillic in a Turkish answer, or CJK in an English answer).
+- When web or RAG context is in another language, paraphrase in the reply language — do not paste raw foreign snippets.
+- Preserve the user’s exact spelling for names and words they wrote with language-specific letters (e.g. Turkish ç ğ ı ö ş ü); do not replace them with a different famous person’s name from search results without explaining the mismatch.
 - Stay on topic: answer what the user asked; do not drift into unrelated topics.
 - Be direct, useful, and concise. Avoid filler, hedging, and repetitive disclaimers.
 - Do not invent precise historical dates, statistics, or quotes; if unsure, say briefly that you are uncertain.
@@ -35,15 +37,16 @@ You are a capable assistant. Follow these rules strictly:
 - Use structure (bullets, short sections) only when it improves clarity.
 - If the user asks to export or convert to PDF/PNG/JPG/etc., do not refuse when the server can perform that action; the system handles real file exports separately.
 - Never claim you cannot save, convert, or export the last image or answer to PDF/PNG/JPG when the user uses short commands like "pdf yap" or "png ver"; do not recommend external tools for that unless conversion truly failed server-side.
+- For drawings of real public figures, real buildings, universities, landmarks, or brands, the system may retrieve brief web context to ground the image; do not insist you must guess from memory alone when that pipeline runs.
 """
 
 MWS_POLICY_MARKER_DEEP = '[MWS_ASSISTANT_POLICY_DEEP_v1]'
 
 MWS_ASSISTANT_POLICY_DEEP_TEXT = """\
 You are in Deep thinking mode. Follow these rules strictly:
-- Use exactly ONE natural language for the entire reply, matching the user's message. Never mix languages.
+- Use exactly ONE natural language for the entire reply, matching the user's message. Never mix languages or scripts unless the user asked for bilingual output.
 - Prioritize correctness and depth over brevity: research-style answers are welcome when the question needs it.
-- If the conversation includes retrieved web or document context (snippets, citations, RAG), ground your answer in that material; do not ignore it. When sources disagree, acknowledge uncertainty briefly.
+- If the conversation includes retrieved web or document context (snippets, citations, RAG), ground your answer in that material; synthesize it in the user's language — do not paste untranslated multilingual blocks. When sources disagree, acknowledge uncertainty briefly.
 - Do not invent precise dates, statistics, or quotes; if context does not support a claim, say so.
 - Structure the answer clearly (sections, bullets) when it helps readability for complex topics.
 - Do not describe internal routing, model names, or orchestration.
@@ -152,9 +155,27 @@ def maybe_inject_mws_assistant_policy(request: Any, form_data: dict, model: dict
     try:
         from open_webui.utils.mws_gpt.active import is_mws_gpt_active
         from open_webui.utils.mws_gpt.router import _is_mws_tagged_model
+        from open_webui.utils.mws_gpt.registry import (
+            collect_attachment_kinds,
+            extract_last_user_text,
+            wants_image_edit_pipeline_turn,
+        )
+        from open_webui.utils.misc import add_or_update_system_message
 
         cfg = request.app.state.config
-        if not is_mws_gpt_active(cfg):
+        _active = is_mws_gpt_active(cfg)
+        if _active:
+            lu = extract_last_user_text(form_data.get('messages') or [])
+            att = collect_attachment_kinds(form_data.get('files'), form_data.get('messages'))
+            if wants_image_edit_pipeline_turn(lu) and 'image' in att:
+                form_data['messages'] = add_or_update_system_message(
+                    '\n[IMAGE_EDIT_CONTEXT] The user attached a photo and asked to edit or restyle it. '
+                    'Do not refuse, do not say you cannot edit images, and do not ask for unnecessary details '
+                    'when the request is already actionable. The server performs the edit; keep your reply short.',
+                    form_data.get('messages') or [],
+                    append=True,
+                )
+        if not _active:
             return
         tag = (getattr(cfg, 'MWS_GPT_TAG', None) or 'mws').strip() or 'mws'
         if not _is_mws_tagged_model(model, tag):

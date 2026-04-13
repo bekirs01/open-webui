@@ -12,6 +12,7 @@ from open_webui.utils.mws_gpt.registry import (
     classify_task_modality,
     collect_attachment_kinds,
     extract_last_user_text,
+    wants_web_research_heavy_task,
 )
 from open_webui.utils.mws_gpt.orchestrator import (
     estimate_complexity,
@@ -86,6 +87,7 @@ def decide_mws_model(
         message_text=message_text,
         attachments=attachments,
         input_mode=input_mode,
+        enable_image_edit=getattr(config, 'ENABLE_IMAGE_EDIT', False),
     )
 
     px = params or {}
@@ -104,6 +106,9 @@ def decide_mws_model(
                 modality=modality,
                 attachments=attachments,
             )
+            # Link / official-source / verification turns need a stronger default text tier than "simple".
+            if complexity == 'simple' and wants_web_research_heavy_task(message_text):
+                complexity, complexity_reason = 'medium', 'web_research_intent'
             pick, warn = pick_auto_text_by_complexity(available, complexity)
         warnings = [warn] if warn else []
         log.info(

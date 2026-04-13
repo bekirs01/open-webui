@@ -5,6 +5,7 @@
 	"scripts": {
 		"dev:backend": "bash scripts/run-backend.sh",
 		"dev:web": "npm run pyodide:fetch && vite dev --host",
+		"dev:web:brew": "npm run pyodide:fetch && vite dev --host",
 		"dev:all": "concurrently -k -n backend,web -c blue,magenta \"npm run dev:backend\" \"npm run dev:web\"",
 		"bootstrap": "bash scripts/bootstrap.sh",
 		"dev": "npm run pyodide:fetch && vite dev --host",
@@ -23,7 +24,8 @@
 		"i18n:parse": "i18next --config i18next-parser.config.ts && prettier --write \"src/lib/i18n/**/*.{js,json}\"",
 		"cy:open": "cypress open",
 		"test:frontend": "vitest --passWithNoTests",
-		"pyodide:fetch": "node scripts/prepare-pyodide.js"
+		"pyodide:fetch": "node scripts/prepare-pyodide.js",
+		"collab": "node server/collab.js"
 	},
 	"devDependencies": {
 		"@sveltejs/adapter-auto": "3.2.2",
@@ -153,6 +155,7 @@
 		"vega": "^6.2.0",
 		"vega-lite": "^6.4.1",
 		"vite-plugin-static-copy": "^2.2.0",
+		"ws": "^8.20.0",
 		"xlsx": "^0.18.5",
 		"y-prosemirror": "^1.3.7",
 		"y-protocols": "^1.0.7",

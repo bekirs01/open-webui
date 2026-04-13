@@ -3,12 +3,22 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from open_webui.utils.mws_gpt.image_prompt import build_mws_image_prompt
+from open_webui.utils.mws_gpt.image_grounding import wants_research_grounded_image_prompt
+from open_webui.utils.mws_gpt.image_prompt import (
+    build_mws_image_edit_prompt,
+    build_mws_image_prompt,
+    get_default_image_negative_prompt,
+    get_prior_user_request_for_variation,
+    is_variation_only_message,
+)
+from open_webui.utils.mws_gpt.artifact_resolver import extract_last_image_artifact_for_export
 from open_webui.utils.mws_gpt.registry import (
     classify_task_modality,
     extract_last_user_text,
     is_pure_image_draw_turn,
     should_inject_web_search_for_message,
+    wants_image_edit_pipeline_turn,
+    wants_web_research_heavy_task,
 )
 from open_webui.utils.mws_gpt.router import LEGACY_AUTO_IDS, MWS_AUTO_ID, decide_mws_model, resolve_mws_chat_model
 from open_webui.utils.mws_gpt.team_registry import (
@@ -80,6 +90,55 @@ def test_pure_image_no_web_inject():
     )
 
 
+def test_web_research_heavy_triggers_inject():
+    assert wants_web_research_heavy_task('Ural Federal Üniversitesi hazırlık kayıt sayfasının linkini ver')
+    assert should_inject_web_search_for_message(
+        message_text='resmi başvuru linkini bul',
+        attachments=set(),
+        input_mode=None,
+    )
+
+
+def test_supplemental_web_after_url():
+    from open_webui.utils.mws_gpt.registry import supplemental_web_research_requested
+
+    assert supplemental_web_research_requested('özetle ve başka kaynaklardan doğrula')
+    assert supplemental_web_research_requested('internetten de araştır')
+
+
+def test_research_grounded_image_triggers_web_when_flagged():
+    assert should_inject_web_search_for_message(
+        message_text="Ural Federal University kampüsünü çiz",
+        attachments=set(),
+        input_mode=None,
+        research_grounded_image=True,
+    )
+
+
+def test_research_grounded_detection():
+    assert wants_research_grounded_image_prompt('Ural Federal University kampüsünü çiz')
+    assert wants_research_grounded_image_prompt('Harvard campus draw photorealistic')
+    assert wants_research_grounded_image_prompt('şu adamı çiz')
+    assert wants_research_grounded_image_prompt('şu ünlü kişiyi çiz')
+    assert wants_research_grounded_image_prompt('bu gerçek kişiyi çiz')
+    assert wants_research_grounded_image_prompt("Kremlin'i çiz")
+    assert wants_research_grounded_image_prompt('Recep Tayyip Erdoğan sınav çekerken çiz')
+    assert not wants_research_grounded_image_prompt('mavi kedi çiz')
+    assert not wants_research_grounded_image_prompt('bana kartopu resmi çiz')
+
+
+def test_split_web_research_grounding_in_prompt():
+    from open_webui.utils.mws_gpt.image_prompt import split_url_injected_grounding
+
+    raw = (
+        '### Web research (visual grounding)\n\nStone facade and columns.\n\n'
+        '---\n\n**User message:**\n\nHarvard çiz'
+    )
+    g, core = split_url_injected_grounding(raw)
+    assert g and 'facade' in g.lower()
+    assert 'Harvard' in core
+
+
 def test_pure_image_prompt_snowball_not_banana():
     p = build_mws_image_prompt('bana kartopu resmi çiz')
     assert 'snowball' in p.lower()
@@ -91,6 +150,37 @@ def test_image_prompt_zuckerberg_banana():
     pl = p.lower()
     assert 'zuckerberg' in pl or 'mark' in pl
     assert 'banana' in pl
+
+
+def test_image_prompt_trump_snowball_holding():
+    p = build_mws_image_prompt('bana elinde kartopu olan trump çiz')
+    pl = p.lower()
+    assert 'snowball' in pl and 'banana' not in pl
+    assert 'holding' in pl
+
+
+def test_image_prompt_trump_horseback():
+    p = build_mws_image_prompt('bana atın üzerinde giden trump çiz')
+    pl = p.lower()
+    assert 'horse' in pl and 'riding' in pl
+    assert 'boat' in pl or 'maritime' in pl  # explicit NOT
+
+
+def test_image_prompt_running_airplane_not_person():
+    p = build_mws_image_prompt('bana koşan uçak çiz')
+    pl = p.lower()
+    assert 'aircraft' in pl or 'jet' in pl or 'airplane' in pl
+
+
+def test_image_prompt_variation_uses_prior():
+    msgs = [
+        {'role': 'user', 'content': 'bana mavi bir kedi çiz'},
+        {'role': 'user', 'content': 'bir tane daha çiz'},
+    ]
+    prior = get_prior_user_request_for_variation(msgs, 'bir tane daha çiz')
+    assert prior and 'kedi' in prior
+    p = build_mws_image_prompt('bir tane daha çiz', previous_user_text=prior)
+    assert 'variation' in p.lower()
 
 
 def test_is_pure_image_draw_turn():
@@ -273,6 +363,96 @@ def test_parse_export_intent_turkish_pdf_png():
     assert parse_export_intent('farklı formatta ver') is not None
     assert parse_export_intent('png ver') is not None
     assert parse_export_intent('bana pdf nedir tam olarak') is None
+
+
+def test_parse_export_intent_x_olarak_ver():
+    assert parse_export_intent('jpeg olarak ver').target == 'jpeg'
+    assert parse_export_intent('pdf olarak ver').target == 'pdf'
+
+
+def test_extract_last_image_skips_prior_pdf():
+    uid_img = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+    uid_pdf = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
+    msgs = [
+        {'role': 'user', 'content': 'draw'},
+        {
+            'role': 'assistant',
+            'content': 'done',
+            'files': [
+                {'type': 'image', 'url': f'/api/v1/files/{uid_img}/content', 'content_type': 'image/png'},
+            ],
+        },
+        {'role': 'user', 'content': 'pdf olarak ver'},
+        {
+            'role': 'assistant',
+            'content': 'PDF hazır.',
+            'files': [
+                {
+                    'type': 'file',
+                    'url': f'/api/v1/files/{uid_pdf}/content',
+                    'content_type': 'application/pdf',
+                },
+            ],
+        },
+        {'role': 'user', 'content': 'jpeg olarak ver'},
+    ]
+    art = extract_last_image_artifact_for_export(msgs)
+    assert art and uid_img in (art.get('url') or '')
+    assert uid_pdf not in (art.get('url') or '')
+
+
+def test_default_image_negative_nonempty():
+    assert len(get_default_image_negative_prompt()) > 20
+
+
+def test_variation_not_farkli_new_subject():
+    """'farklı X' is a new request, not 'give me another of the same'."""
+    assert not is_variation_only_message('farklı bir kedi çiz')
+
+
+def test_english_at_not_horse_in_prompt():
+    p = build_mws_image_prompt('draw a red car at the parking lot')
+    assert 'horse' not in p.lower()
+
+
+def test_wants_image_edit_pipeline_turn():
+    assert wants_image_edit_pipeline_turn('bunun üzerine takım elbiseli olarak çiz')
+    assert wants_image_edit_pipeline_turn('bunun üzerine tyakım elbiseli olarak çiz')
+    assert wants_image_edit_pipeline_turn('buna takım elbise giydir')
+    assert wants_image_edit_pipeline_turn('remove the background')
+    assert wants_image_edit_pipeline_turn('bunu daha resmi yap')
+    assert wants_image_edit_pipeline_turn('turn this into a formal portrait')
+    assert wants_image_edit_pipeline_turn('saç rengini sarı yap')
+    assert wants_image_edit_pipeline_turn('измени фон на офис')
+    assert not wants_image_edit_pipeline_turn('bu görselde ne var')
+    assert not wants_image_edit_pipeline_turn('bu fotoğrafta kim var')
+
+
+def test_build_mws_image_edit_prompt_structure():
+    p = build_mws_image_edit_prompt('bu adama takım elbise giydir')
+    assert 'reference' in p.lower() or 'source' in p.lower()
+    assert 'bu adama' in p
+    assert 'different person' in p.lower() or 'identity' in p.lower()
+
+
+def test_classify_modality_image_edit_routes_to_generation_when_enabled():
+    m, r = classify_task_modality(
+        message_text='buna takım elbise giydir',
+        attachments={'image'},
+        input_mode=None,
+        enable_image_edit=True,
+    )
+    assert m == 'image_generation', r
+
+
+def test_classify_modality_image_vqa_stays_vision_with_edit_enabled():
+    m, _ = classify_task_modality(
+        message_text='bu görselde ne var',
+        attachments={'image'},
+        input_mode=None,
+        enable_image_edit=True,
+    )
+    assert m == 'vision'
 
 
 def test_export_blocks_web_search():
