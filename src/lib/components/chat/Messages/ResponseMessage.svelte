@@ -1160,6 +1160,22 @@
 									</Tooltip>
 								{/if}
 
+								{#if message.humanizeStats}
+									<Tooltip
+										content={`Original: ${message.humanizeStats.origWords} words → ${message.humanizeStats.newWords} words · ${message.humanizeStats.wordsChanged} words changed`}
+										placement="bottom"
+									>
+										<span
+											class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300 select-none"
+										>
+											<svg xmlns="http://www.w3.org/2000/svg" class="size-3" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+												<path stroke-linecap="round" stroke-linejoin="round" d="M16.862 3.487a2.25 2.25 0 1 1 3.182 3.182L7.5 19.213l-4.125.688.688-4.125L16.862 3.487z" />
+											</svg>
+											Humanized · {message.humanizeStats.newWords} words
+										</span>
+									</Tooltip>
+								{/if}
+
 								{#if !readOnly}
 									{#if !$temporaryChatEnabled && ($config?.features.enable_message_rating ?? true) && ($user?.role === 'admin' || ($user?.permissions?.chat?.rate_response ?? true))}
 										<Tooltip content={$i18n.t('Good Response')} placement="bottom">

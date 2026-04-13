@@ -73,6 +73,7 @@ msoffcrypto-tool==6.0.0
 unstructured==0.18.31
 
 nltk==3.9.3
+spacy>=3.5.0
 Markdown==3.10.2
 beautifulsoup4==4.14.3
 pypandoc==1.16.2

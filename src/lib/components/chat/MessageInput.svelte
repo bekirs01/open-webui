@@ -142,6 +142,9 @@
 	export let webSearchEnabled = false;
 	export let deepThinkingEnabled = false;
 	export let codeInterpreterEnabled = false;
+	export let humanizeMode: 'off' | 'auto' | 'always' = (() => {
+		try { return (localStorage.getItem('humanizeMode') as 'off' | 'auto' | 'always') || 'off'; } catch { return 'off'; }
+	})();
 
 	export let pendingOAuthTools = [];
 
@@ -1895,6 +1898,7 @@
 											bind:imageGenerationEnabled
 											bind:codeInterpreterEnabled
 											bind:deepThinkingEnabled
+											bind:humanizeMode
 											closeOnOutsideClick={integrationsMenuCloseOnOutsideClick}
 											onShowValves={(e) => {
 												const { type, id } = e;

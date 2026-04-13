@@ -99,6 +99,7 @@ from open_webui.routers import (
     scim,
     terminals,
 )
+from open_webui.routers import humanize
 
 from open_webui.routers.retrieval import (
     get_embedding_function,
@@ -1552,6 +1553,7 @@ if ENABLE_ADMIN_ANALYTICS:
     app.include_router(analytics.router, prefix='/api/v1/analytics', tags=['analytics'])
 app.include_router(utils.router, prefix='/api/v1/utils', tags=['utils'])
 app.include_router(terminals.router, prefix='/api/v1/terminals', tags=['terminals'])
+app.include_router(humanize.router, prefix='/api/humanize', tags=['humanize'])
 
 # SCIM 2.0 API for identity management
 if ENABLE_SCIM:

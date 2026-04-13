@@ -49,6 +49,8 @@
 	export let showDeepThinkingButton = false;
 	export let deepThinkingEnabled = false;
 
+	export let humanizeMode: 'off' | 'auto' | 'always' = 'off';
+
 	export let onShowValves: Function;
 	export let onClose: Function;
 	export let closeOnOutsideClick = true;
@@ -347,6 +349,46 @@
 							</button>
 						</Tooltip>
 					{/if}
+
+					<!-- Humanize button: cycles Off → Auto → Always -->
+					<Tooltip
+						content={humanizeMode === 'off'
+							? 'Humanize: Off — responses are not rewritten'
+							: humanizeMode === 'auto'
+								? 'Humanize: Auto — rewrites only long responses (>50 words)'
+								: 'Humanize: Always — rewrites every response'}
+						placement="top-start"
+					>
+						<button
+							class="flex w-full justify-between gap-2 items-center px-3 py-1.5 text-sm cursor-pointer rounded-xl hover:bg-gray-50 dark:hover:bg-gray-800/50"
+							on:click={() => {
+								if (humanizeMode === 'off') humanizeMode = 'auto';
+								else if (humanizeMode === 'auto') humanizeMode = 'always';
+								else humanizeMode = 'off';
+								try { localStorage.setItem('humanizeMode', humanizeMode); } catch {}
+							}}
+						>
+							<div class="flex-1 truncate">
+								<div class="flex flex-1 gap-2 items-center">
+									<div class="shrink-0">
+										<!-- Pencil / humanize icon -->
+										<svg xmlns="http://www.w3.org/2000/svg" class="size-4" fill="none" viewBox="0 0 24 24" stroke-width="1.75" stroke="currentColor">
+											<path stroke-linecap="round" stroke-linejoin="round" d="M16.862 3.487a2.25 2.25 0 1 1 3.182 3.182L7.5 19.213l-4.125.688.688-4.125L16.862 3.487z" />
+										</svg>
+									</div>
+									<div class="truncate">Humanize</div>
+								</div>
+							</div>
+							<div class="shrink-0 text-xs font-medium px-1.5 py-0.5 rounded-md
+								{humanizeMode === 'off'
+									? 'text-gray-400 dark:text-gray-500'
+									: humanizeMode === 'auto'
+										? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
+										: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300'}">
+								{humanizeMode === 'off' ? 'Off' : humanizeMode === 'auto' ? 'Auto' : 'Always'}
+							</div>
+						</button>
+					</Tooltip>
 				</div>
 			{:else if tab === 'tools' && tools}
 				<div in:fly={{ x: 20, duration: 150 }}>

@@ -248,6 +248,11 @@
 	let webSearchEnabled = false;
 	let deepThinkingEnabled = false;
 	let codeInterpreterEnabled = false;
+	let humanizeMode: 'off' | 'auto' | 'always' = (() => {
+		const saved =
+			typeof localStorage !== 'undefined' ? localStorage.getItem('humanizeMode') : null;
+		return saved === 'auto' || saved === 'always' ? saved : 'off';
+	})();
 
 	let showCommands = false;
 
@@ -1872,6 +1877,155 @@
 				scrollToBottom();
 			}
 
+			// --- Humanize feature ---
+			if (humanizeMode !== 'off' && !message.error) {
+				// Strip reasoning/thinking detail blocks before sending to humanizer
+				const rawContent: string = message.content ?? '';
+				const cleanContent = rawContent
+					.replace(/<details\s[^>]*type=["']reasoning["'][^>]*>[\s\S]*?<\/details>/gi, '')
+					.trim();
+
+				// Get user's prompt from parent message for intent analysis (Auto mode)
+				const _msgs = history.messages as Record<string, { content?: unknown }>;
+				const parentMsg = message.parentId ? _msgs[message.parentId as string] : null;
+				const userPrompt: string =
+					typeof parentMsg?.content === 'string' ? parentMsg.content : '';
+
+				const _needsHumanizeAuto = (prompt: string, response: string): boolean => {
+					const p = prompt.toLowerCase();
+
+					// Signals that content must stay precise — DON'T humanize
+					const precisionPatterns = [
+						/\bdefin(e|ition|itions)\b/,
+						/\bcalculat/,
+						/\bformul[ae]?\b/,
+						/\bequation\b/,
+						/\btheorem?\b/,
+						/\bprove?\b/,
+						/\balgorithm\b/,
+						/\bcode\b/,
+						/\bprogram(ming)?\b/,
+						/\bfunction\b/,
+						/\btranslat/,
+						/\bconvert\b/,
+						/\bwhat is\b/,
+						/\bwhat are\b/,
+						/\blist (the|all|some)\b/,
+						/\benumerat/,
+						/\bdiagnos/,
+						/\bscientific\b/,
+						/\bresearch paper\b/,
+						/\bstatistic/,
+						/\bwhen (was|did|is|are)\b/,
+						/\bwho (was|is|invented|discovered)\b/,
+						/\bwhere (is|was|are)\b/,
+						/\bhow (much|many|long|far|tall|big|small|old|fast)\b/,
+						/\bstep[- ]by[- ]step\b/,
+						/\binstruc(t|tion)/,
+						/\brecipe\b/,
+						/\bsyntax\b/,
+						/\bsql\b/,
+						/\bapi\b/,
+						/\bjson\b/,
+						/\bxml\b/,
+						/\bregex\b/,
+						/\bcommand\b/,
+						/\berror\b/,
+						/\bbug\b/,
+						/\bfix\b/,
+						/\bdebug\b/
+					];
+
+					// Signals that creative / expressive text will benefit from humanization
+					const creativePatterns = [
+						/\bwrit(e|ing)\b/,
+						/\bstory\b/,
+						/\bstories\b/,
+						/\bpoem\b/,
+						/\bessay\b/,
+						/\bblog\b/,
+						/\bletter\b/,
+						/\bcreativ/,
+						/\bfiction\b/,
+						/\bnarrat/,
+						/\bimagin/,
+						/\btale\b/,
+						/\bnovel\b/,
+						/\bscript\b/,
+						/\bdescrib/,
+						/\bexplain (to|like|simply|in simple|in plain)\b/,
+						/\bsummariz/,
+						/\bparaphra/,
+						/\brewrite\b/,
+						/\bexpand\b/,
+						/\belaborat/,
+						/\bdiscuss\b/,
+						/\banalyze\b/,
+						/\bargue\b/,
+						/\bpersuad/,
+						/\bopinion\b/,
+						/\bthoughts?\b/,
+						/\bcompose\b/,
+						/\bdraft\b/,
+						/\breview\b/,
+						/\bintroduc/,
+						/\bconclude\b/,
+						/\bspeech\b/,
+						/\bpresent/,
+						/\bconvinc/
+					];
+
+					const isPrecise = precisionPatterns.some((rx) => rx.test(p));
+					const isCreative = creativePatterns.some((rx) => rx.test(p));
+
+					// Explicit creative intent wins over precision signals
+					if (isCreative && !isPrecise) return true;
+					// Precision overrides everything
+					if (isPrecise) return false;
+					// Neutral: humanize only long freeform responses
+					return response.split(/\s+/).filter(Boolean).length > 120;
+				};
+
+				const shouldHumanize =
+					humanizeMode === 'always' ||
+					(humanizeMode === 'auto' && _needsHumanizeAuto(userPrompt, cleanContent));
+
+				if (shouldHumanize && cleanContent.length > 0) {
+					try {
+						const hRes = await fetch(`${WEBUI_BASE_URL}/api/humanize`, {
+							method: 'POST',
+							headers: {
+								'Content-Type': 'application/json',
+								Authorization: `Bearer ${localStorage.token}`
+							},
+							body: JSON.stringify({ text: cleanContent, intensity: 0.5 })
+						});
+						if (hRes.ok) {
+							const hData = await hRes.json();
+							message.content = hData.humanized_text;
+							(message as Record<string, unknown>).humanizeStats = {
+								origWords: hData.orig_word_count,
+								newWords: hData.new_word_count,
+								wordsChanged: hData.words_changed
+							};
+							history.messages[message.id] = message;
+							await tick();
+							toast.success(
+								`Humanized: ${hData.words_changed} word${hData.words_changed !== 1 ? 's' : ''} rewritten`
+							);
+						} else {
+							const errBody = await hRes.text().catch(() => hRes.statusText);
+							console.warn('Humanize API error:', hRes.status, errBody);
+							toast.error(`Humanize failed (${hRes.status}): check server logs`);
+						}
+					} catch (fetchErr) {
+						console.warn('Humanize request failed:', fetchErr);
+						toast.error('Humanize: could not reach /api/humanize');
+					}
+				}
+			}
+			// --- End Humanize feature ---
+
 			// Fire-and-forget: run chatCompletedHandler for background work
 			// (outlet filters, chat save, title gen, follow-ups, tags)
 			// without blocking the user from sending new messages.
@@ -3090,6 +3244,7 @@
 									{pendingOAuthTools}
 									bind:webSearchEnabled
 									bind:deepThinkingEnabled
+									bind:humanizeMode
 									bind:atSelectedModel
 									bind:showCommands
 									bind:dragged
@@ -3174,6 +3329,7 @@
 									bind:codeInterpreterEnabled
 									bind:webSearchEnabled
 									bind:deepThinkingEnabled
+									bind:humanizeMode
 									bind:atSelectedModel
 									bind:showCommands
 									bind:dragged
