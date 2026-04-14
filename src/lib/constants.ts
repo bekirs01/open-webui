@@ -1,10 +1,34 @@
 import { browser, dev } from '$app/environment';
+import { env } from '$env/dynamic/public';
 // import { version } from '../../package.json';
 
 export const APP_NAME = 'Open WebUI';
 
-export const WEBUI_HOSTNAME = browser ? (dev ? `${location.hostname}:8080` : ``) : '';
-export const WEBUI_BASE_URL = browser ? (dev ? `http://${WEBUI_HOSTNAME}` : ``) : ``;
+/**
+ * Geliştirmede Vite proxy kullanılıyor (vite.config.ts → server.proxy).
+ * Tüm /api, /ollama, /socket.io vb. istekler aynı origin üzerinden backend'e gider.
+ * Proxy olmadan doğrudan backend'e bağlanmak için kök .env: PUBLIC_WEBUI_BACKEND_URL=http://127.0.0.1:9090
+ */
+function devBackendBaseUrl(): string {
+	const override = env.PUBLIC_WEBUI_BACKEND_URL?.trim().replace(/\/$/, '');
+	if (override) return override;
+	return '';
+}
+
+export const WEBUI_BASE_URL = browser ? (dev ? devBackendBaseUrl() : ``) : ``;
+export const WEBUI_HOSTNAME = browser
+	? dev
+		? (() => {
+				const base = devBackendBaseUrl();
+				if (!base) return location.host;
+				try {
+					return new URL(base).host;
+				} catch {
+					return location.host;
+				}
+			})()
+		: ``
+	: ``;
 export const WEBUI_API_BASE_URL = `${WEBUI_BASE_URL}/api/v1`;
 
 export const OLLAMA_API_BASE_URL = `${WEBUI_BASE_URL}/ollama`;

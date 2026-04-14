@@ -59,8 +59,17 @@ export const addNewMemory = async (token: string, content: string) => {
 	return res;
 };
 
-export const updateMemoryById = async (token: string, id: string, content: string) => {
+export const updateMemoryById = async (
+	token: string,
+	id: string,
+	content: string,
+	opts?: { status?: string; category?: string }
+) => {
 	let error = null;
+
+	const body: Record<string, string | undefined> = { content };
+	if (opts?.status) body.status = opts.status;
+	if (opts?.category) body.category = opts.category;
 
 	const res = await fetch(`${WEBUI_API_BASE_URL}/memories/${id}/update`, {
 		method: 'POST',
@@ -69,9 +78,35 @@ export const updateMemoryById = async (token: string, id: string, content: strin
 			'Content-Type': 'application/json',
 			authorization: `Bearer ${token}`
 		},
-		body: JSON.stringify({
-			content: content
+		body: JSON.stringify(body)
+	})
+		.then(async (res) => {
+			if (!res.ok) throw await res.json();
+			return res.json();
 		})
+		.catch((err) => {
+			error = err.detail;
+			console.error(err);
+			return null;
+		});
+
+	if (error) {
+		throw error;
+	}
+
+	return res;
+};
+
+export const getMemoryStats = async (token: string) => {
+	let error = null;
+
+	const res = await fetch(`${WEBUI_API_BASE_URL}/memories/stats`, {
+		method: 'GET',
+		headers: {
+			Accept: 'application/json',
+			'Content-Type': 'application/json',
+			authorization: `Bearer ${token}`
+		}
 	})
 		.then(async (res) => {
 			if (!res.ok) throw await res.json();

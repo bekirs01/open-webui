@@ -19,6 +19,7 @@
 	let expandedContent = false;
 
 	import Modal from './Modal.svelte';
+	import ArrowDownTray from '../icons/ArrowDownTray.svelte';
 	import XMark from '../icons/XMark.svelte';
 	import Switch from './Switch.svelte';
 	import Tooltip from './Tooltip.svelte';
@@ -32,6 +33,12 @@
 	export let item;
 	export let show = false;
 	export let edit = false;
+
+	$: fileDownloadId =
+		item?.id ??
+		(typeof item?.url === 'string' && /^[0-9a-f-]{36}$/i.test(item.url.trim())
+			? item.url.trim()
+			: null);
 
 	let enableFullContent = false;
 	let loading = false;
@@ -276,8 +283,8 @@
 <Modal bind:show size="lg">
 	<div class="font-primary px-4.5 py-3.5 w-full flex flex-col justify-center dark:text-gray-400">
 		<div class=" pb-2">
-			<div class="flex items-start justify-between">
-				<div>
+			<div class="flex items-start justify-between gap-3">
+				<div class="min-w-0 flex-1">
 					<div class=" font-medium text-lg dark:text-gray-100">
 						<a
 							href="#"
@@ -300,7 +307,18 @@
 					</div>
 				</div>
 
-				<div>
+				<div class="flex shrink-0 items-center gap-2">
+					{#if item?.type === 'file' && fileDownloadId}
+						<a
+							href={`${WEBUI_API_BASE_URL}/files/${fileDownloadId}/content?attachment=true`}
+							download={item?.name ?? 'download'}
+							title={$i18n.t('Download')}
+							class="inline-flex items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-800 shadow-sm hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+						>
+							<ArrowDownTray className="size-4" strokeWidth="1.75" />
+							<span>{$i18n.t('Download')}</span>
+						</a>
+					{/if}
 					<button
 						on:click={() => {
 							show = false;

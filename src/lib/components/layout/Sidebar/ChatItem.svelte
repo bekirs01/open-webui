@@ -382,12 +382,12 @@
 	{#if confirmEdit}
 		<div
 			id="sidebar-chat-item"
-			class=" w-full flex justify-between rounded-xl px-[11px] py-[6px] {id === $chatId ||
+			class=" w-full flex justify-between rounded-lg px-[11px] py-[6px] {id === $chatId ||
 			confirmEdit
-				? 'bg-gray-100 dark:bg-gray-900 selected'
+				? 'bg-gray-100 dark:bg-neutral-800 selected'
 				: selected
-					? 'bg-gray-100 dark:bg-gray-950 selected'
-					: 'group-hover:bg-gray-100 dark:group-hover:bg-gray-950'}  whitespace-nowrap text-ellipsis relative {generating
+					? 'bg-gray-100 dark:bg-neutral-800/95 selected'
+					: 'group-hover:bg-gray-100 dark:group-hover:bg-neutral-800/80'}  whitespace-nowrap text-ellipsis relative {generating
 				? 'cursor-not-allowed'
 				: ''}"
 		>
@@ -418,12 +418,12 @@
 	{:else}
 		<a
 			id="sidebar-chat-item"
-			class=" w-full flex justify-between rounded-xl px-[11px] py-[6px] {id === $chatId ||
+			class=" w-full flex justify-between rounded-lg px-[11px] py-[6px] {id === $chatId ||
 			confirmEdit
-				? 'bg-gray-100 dark:bg-gray-900 selected'
+				? 'bg-gray-100 dark:bg-neutral-800 selected'
 				: selected
-					? 'bg-gray-100 dark:bg-gray-950 selected'
-					: ' group-hover:bg-gray-100 dark:group-hover:bg-gray-950'}  whitespace-nowrap text-ellipsis"
+					? 'bg-gray-100 dark:bg-neutral-800/95 selected'
+					: ' group-hover:bg-gray-100 dark:group-hover:bg-neutral-800/80'}  whitespace-nowrap text-ellipsis"
 			href="/c/{id}"
 			on:click={() => {
 				dispatch('select');
@@ -479,10 +479,10 @@
 		id="sidebar-chat-item-menu"
 		class="
         {id === $chatId || confirmEdit
-			? 'from-gray-100 dark:from-gray-900 selected'
+			? 'from-gray-100 dark:from-neutral-800 selected'
 			: selected
-				? 'from-gray-100 dark:from-gray-950 selected'
-				: 'invisible group-hover:visible from-gray-100 dark:from-gray-950'}
+				? 'from-gray-100 dark:from-neutral-800/95 selected'
+				: 'invisible group-hover:visible from-gray-100 dark:from-neutral-800/80'}
             absolute {className === 'pr-2'
 			? 'right-[8px]'
 			: 'right-1'} top-[4px] py-1 pr-0.5 mr-1.5 pl-5 bg-linear-to-l from-80%

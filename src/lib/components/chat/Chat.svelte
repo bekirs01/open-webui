@@ -77,6 +77,7 @@
 		updateChatById,
 		updateChatFolderIdById
 	} from '$lib/apis/chats';
+	import { crossChatContinue, crossChatClearImport } from '$lib/apis/crosschat';
 	import { generateOpenAIChatCompletion } from '$lib/apis/openai';
 	import { processWeb, processWebSearch, processYoutubeVideo } from '$lib/apis/retrieval';
 	import { getAndUpdateUserLocation, getUserSettings } from '$lib/apis/users';
@@ -107,6 +108,7 @@
 	import MessageInput from '$lib/components/chat/MessageInput.svelte';
 	import Messages from '$lib/components/chat/Messages.svelte';
 	import Navbar from '$lib/components/chat/Navbar.svelte';
+	import ImportContextModal from '$lib/components/chat/ImportContextModal.svelte';
 	import CollabSessionBar from '$lib/components/chat/CollabSessionBar.svelte';
 	import ChatControls from './ChatControls.svelte';
 	import EventConfirmDialog from '../common/ConfirmDialog.svelte';
@@ -204,6 +206,7 @@
 	let navbarElement;
 
 	let showEventConfirmation = false;
+	let showImportContextModal = false;
 	let eventConfirmationTitle = '';
 	let eventConfirmationMessage = '';
 	let eventConfirmationInput = false;
@@ -1780,6 +1783,10 @@
 		}
 
 		if (choices) {
+			const m0 = choices[0]?.message;
+			if (m0?.files?.length) {
+				message.files = m0.files;
+			}
 			if (choices[0]?.message?.content) {
 				// Non-stream response
 				message.content += choices[0]?.message?.content;
@@ -2249,7 +2256,12 @@
 			}
 		}
 
-		if ($settings?.memory ?? false) {
+		// Uzun vadeli kullanıcı hafızası: sunucuda enable_memories açıksa varsayılan olarak açık (ayarlardan kapatılabilir)
+		if (
+			$config?.features?.enable_memories &&
+			($user?.role === 'admin' || ($user?.permissions?.features?.memories ?? true)) &&
+			($settings?.memory ?? true)
+		) {
 			features = { ...features, memory: true };
 		}
 
@@ -2874,6 +2886,56 @@
 		await sessionStorage.removeItem(`chat-input${chatId ? `-${chatId}` : ''}`);
 	};
 
+	const continueInNewChatHandler = async () => {
+		if (!$chatId || $temporaryChatEnabled || !history?.currentId) {
+			toast.error($i18n.t('No conversation to continue from'));
+			return;
+		}
+		try {
+			const res = await crossChatContinue(localStorage.token, $chatId);
+			if (res?.id) {
+				chatId.set(res.id);
+				chat = await getChatById(localStorage.token, res.id);
+				await goto(`/c/${res.id}`);
+				await chats.set(await getChatList(localStorage.token, $currentChatPage));
+				toast.success($i18n.t('New chat started with carried-over context'));
+			}
+		} catch (e: any) {
+			console.error(e);
+			toast.error(e?.detail ?? $i18n.t('Error'));
+		}
+	};
+
+	const openImportContextModal = () => {
+		if (!$chatId || $temporaryChatEnabled) {
+			toast.error($i18n.t('Save this chat first'));
+			return;
+		}
+		showImportContextModal = true;
+	};
+
+	const refreshChatFromServer = async () => {
+		if ($chatId && !$temporaryChatEnabled) {
+			try {
+				chat = await getChatById(localStorage.token, $chatId);
+			} catch (err) {
+				console.error(err);
+			}
+		}
+	};
+
+	const clearCrossChatHandler = async () => {
+		if (!$chatId || $temporaryChatEnabled) return;
+		try {
+			await crossChatClearImport(localStorage.token, $chatId);
+			await refreshChatFromServer();
+			toast.success($i18n.t('Imported context removed'));
+		} catch (e: any) {
+			console.error(e);
+			toast.error(e?.detail ?? $i18n.t('Error'));
+		}
+	};
+
 	const moveChatHandler = async (chatId, folderId) => {
 		if (chatId && folderId) {
 			const res = await updateChatFolderIdById(localStorage.token, chatId, folderId).catch(
@@ -2920,6 +2982,12 @@
 </svelte:head>
 
 <audio id="audioElement" src="" style="display: none;"></audio>
+
+<ImportContextModal
+	bind:show={showImportContextModal}
+	targetChatId={$chatId}
+	onImported={refreshChatFromServer}
+/>
 
 <EventConfirmDialog
 	bind:show={showEventConfirmation}
@@ -2980,6 +3048,7 @@
 						bind:this={navbarElement}
 						chat={{
 							id: $chatId,
+							meta: chat?.meta ?? {},
 							chat: {
 								title: $chatTitle,
 								models: selectedModels,
@@ -2994,6 +3063,9 @@
 						bind:selectedModels
 						mwsAutoRoutingHint={mwsAutoRoutingHint}
 						shareEnabled={!!history.currentId}
+						continueInNewChatHandler={continueInNewChatHandler}
+						importContextHandler={openImportContextModal}
+						clearCrossChatHandler={clearCrossChatHandler}
 						{initNewChat}
 						{archiveChatHandler}
 						{moveChatHandler}

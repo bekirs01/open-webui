@@ -3,7 +3,7 @@
   ------------------
   Terminal 1:  npm run collab
   Terminal 2:  npm run dev
-  Both users open http://localhost:5173 in separate tabs.
+  Both users open http://localhost:1000 in separate tabs.
   One creates a room, shares the roomId with the other via any channel.
 
   HOW TO RUN — PRODUCTION

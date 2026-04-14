@@ -1,13 +1,28 @@
 """
 Runs internal non-stream MWS steps before the main chat completion (Auto orchestration).
+
+Full-history mode: the second (user-facing) model receives the COMPLETE conversation
+history — including images, long-term memory injections, RAG context, and cross-chat
+snapshots — plus the first model's draft as an additional assistant message and a
+concise synthesis directive.  This eliminates the context-loss problem where the
+polisher/synthesizer/reviewer had no access to prior turns.
 """
 
 from __future__ import annotations
 
+import copy
 import logging
 from typing import Any
 
 log = logging.getLogger(__name__)
+
+_SYNTHESIS_ROLE_NOTE = (
+    'An earlier AI model produced the draft answer above. '
+    'You are the final editor. Produce ONE polished, complete answer in the same language '
+    'as the user. Preserve images, code blocks, and factual claims from earlier context. '
+    'Do not mix scripts or paste raw foreign text. Improve clarity, structure, and '
+    'completeness; remove redundancy.'
+)
 
 
 def _extract_assistant_text(resp: Any) -> str:
@@ -22,6 +37,32 @@ def _extract_assistant_text(resp: Any) -> str:
     return ''
 
 
+def _append_preflight_context(
+    messages: list[dict[str, Any]],
+    draft_text: str,
+    synthesis_system: str,
+    extra_instruction: str = '',
+) -> list[dict[str, Any]]:
+    """Return *new* message list = full history + draft assistant + synthesis directive."""
+    out = copy.deepcopy(messages)
+
+    out.append({
+        'role': 'assistant',
+        'content': draft_text,
+    })
+
+    directive = synthesis_system.strip()
+    if extra_instruction:
+        directive += '\n\n' + extra_instruction.strip()
+    directive += '\n\n' + _SYNTHESIS_ROLE_NOTE
+
+    out.append({
+        'role': 'user',
+        'content': directive,
+    })
+    return out
+
+
 async def apply_mws_auto_workflow_preflight(
     request: Any,
     form_data: dict[str, Any],
@@ -30,13 +71,15 @@ async def apply_mws_auto_workflow_preflight(
     model: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """
-    Auto-only: optional vision→text or code→review using an internal blocking completion,
+    Auto-only: optional vision->text or code->review using an internal blocking completion,
     then switch form_data.model for the user-visible (usually streaming) completion.
+
+    The second model now receives the FULL conversation history (including memory, RAG,
+    cross-chat context, images) plus the first model's draft as an extra assistant turn.
     """
     try:
         from open_webui.utils.mws_gpt.active import is_mws_gpt_active
         from open_webui.utils.mws_gpt.auto_workflow import AUTO_FINAL_SYNTHESIS_SYSTEM
-        from open_webui.utils.mws_gpt.registry import extract_last_user_text
 
         if not is_mws_gpt_active(request.app.state.config):
             return form_data, model
@@ -66,27 +109,15 @@ async def apply_mws_auto_workflow_preflight(
 
         from open_webui.routers.openai import generate_chat_completion as openai_generate_chat_completion
 
-        mini_meta = {
-            k: metadata[k]
-            for k in ('chat_id', 'session_id', 'message_id', 'parent_message_id')
-            if k in metadata
-        }
-        rag_files = None
-        try:
-            if isinstance(metadata, dict) and metadata.get('files'):
-                rag_files = metadata.get('files')
-                mini_meta = {**mini_meta, 'files': rag_files}
-        except Exception:
-            pass
-
         deep = bool(form_data.get('mws_deep_thinking'))
+        current_messages = form_data.get('messages') or []
 
         async def _run_block(mid: str, msgs: list) -> str:
             inner: dict[str, Any] = {
                 'model': mid,
                 'messages': msgs,
                 'stream': False,
-                'metadata': mini_meta,
+                'metadata': metadata,
             }
             resp = await openai_generate_chat_completion(request, inner, user)
             return _extract_assistant_text(resp)
@@ -97,23 +128,18 @@ async def apply_mws_auto_workflow_preflight(
             if not vid or not sid:
                 return form_data, model
             try:
-                vision_out = await _run_block(vid, form_data.get('messages') or [])
+                vision_out = await _run_block(vid, current_messages)
                 if not vision_out:
                     log.warning('[MWS] vision preflight empty; keeping original model')
                     return form_data, model
-                ut = extract_last_user_text(form_data.get('messages') or [])
-                form_data['messages'] = [
-                    {'role': 'system', 'content': AUTO_FINAL_SYNTHESIS_SYSTEM},
-                    {
-                        'role': 'user',
-                        'content': (
-                            f'User message:\n{ut}\n\n'
-                            f'Visual analysis (internal):\n{vision_out}\n\n'
-                            'Answer the user directly in the same language as the user message. '
-                            'Do not mix scripts or paste raw foreign text. Be concise.'
-                        ),
-                    },
-                ]
+
+                extra = (
+                    'The assistant message above is a visual analysis by a vision model. '
+                    'Synthesize it with the full conversation into one coherent answer.'
+                )
+                form_data['messages'] = _append_preflight_context(
+                    current_messages, vision_out, AUTO_FINAL_SYNTHESIS_SYSTEM, extra,
+                )
                 form_data['model'] = sid
                 form_data['_mws_auto_preflight_done'] = True
                 model = request.app.state.MODELS.get(sid) or model
@@ -129,36 +155,26 @@ async def apply_mws_auto_workflow_preflight(
             if not did or not pid:
                 return form_data, model
             try:
-                draft = await _run_block(did, form_data.get('messages') or [])
+                draft = await _run_block(did, current_messages)
                 if not draft:
                     return form_data, model
-                ut = extract_last_user_text(form_data.get('messages') or [])
+
                 if deep:
-                    polish_instr = (
-                        'You are the final editor. The draft may rely on retrieved web or document context '
-                        'already present above. Produce ONE polished answer in the same language as the user. '
-                        'Do not paste raw foreign-language snippets; paraphrase in that language. '
-                        'Do not mix scripts (no CJK/Arabic/etc. in Turkish/English answers unless the user used them). '
-                        'Preserve factual claims that are supported by that context; do not invent facts. '
+                    extra = (
+                        'The assistant message above is a draft that may rely on retrieved web or '
+                        'document context already present in the conversation. '
+                        'Preserve factual claims supported by that context; do not invent facts. '
                         'Improve structure, clarity, and completeness; remove redundancy and repetition.'
                     )
                 else:
-                    polish_instr = (
-                        'Rewrite into one excellent final answer in the same language as the user. '
-                        'Single language and script only; no pasted multilingual garbage from sources. '
+                    extra = (
+                        'Rewrite the draft above into one excellent final answer. '
                         'Be precise, well-structured, and complete. Remove redundancy.'
                     )
-                form_data['messages'] = [
-                    {'role': 'system', 'content': AUTO_FINAL_SYNTHESIS_SYSTEM},
-                    {
-                        'role': 'user',
-                        'content': (
-                            f'User message:\n{ut}\n\n'
-                            f'Draft answer (internal):\n{draft}\n\n'
-                            f'{polish_instr}'
-                        ),
-                    },
-                ]
+
+                form_data['messages'] = _append_preflight_context(
+                    current_messages, draft, AUTO_FINAL_SYNTHESIS_SYSTEM, extra,
+                )
                 form_data['model'] = pid
                 form_data['_mws_auto_preflight_done'] = True
                 model = request.app.state.MODELS.get(pid) or model
@@ -174,22 +190,17 @@ async def apply_mws_auto_workflow_preflight(
             if not cid or not rid:
                 return form_data, model
             try:
-                draft = await _run_block(cid, form_data.get('messages') or [])
+                draft = await _run_block(cid, current_messages)
                 if not draft:
                     return form_data, model
-                ut = extract_last_user_text(form_data.get('messages') or [])
-                form_data['messages'] = [
-                    {'role': 'system', 'content': AUTO_FINAL_SYNTHESIS_SYSTEM},
-                    {
-                        'role': 'user',
-                        'content': (
-                            f'User request:\n{ut}\n\n'
-                            f'Draft solution (internal):\n{draft}\n\n'
-                            'Produce the final answer in the same language as the user; single language only. '
-                            'If code was requested, output clean final code with brief explanation only if needed.'
-                        ),
-                    },
-                ]
+
+                extra = (
+                    'The assistant message above is a code draft. '
+                    'If code was requested, output clean final code with brief explanation only if needed.'
+                )
+                form_data['messages'] = _append_preflight_context(
+                    current_messages, draft, AUTO_FINAL_SYNTHESIS_SYSTEM, extra,
+                )
                 form_data['model'] = rid
                 form_data['_mws_auto_preflight_done'] = True
                 model = request.app.state.MODELS.get(rid) or model

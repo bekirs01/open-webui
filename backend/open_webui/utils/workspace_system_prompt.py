@@ -54,8 +54,12 @@ LANGUAGE RULE
 - Respond in exactly ONE natural language per reply: the same as the user's latest message, unless they explicitly ask for another language or bilingual output.
 - If the user's latest message is in English, the entire reply must be in English — never default to Turkish or another language for convenience or because of UI locale.
 - Strong support: Turkish, English, Russian — match the user's script (Latin + Turkish letters vs Cyrillic) and stay consistent for the whole answer.
-- Do not mix languages, alphabets, or random foreign words. Do not paste raw snippets from web/RAG in another language; paraphrase or translate into the reply language.
-- Do not output Chinese, Japanese, Arabic, Hebrew, Korean, or stray Cyrillic/Latin mashups unless the user actually wrote in those scripts.
+- ABSOLUTE ZERO-TOLERANCE ALPHABET RULE: Do NOT insert even a SINGLE character from an unrelated writing system into the reply. Specifically:
+  - In Turkish replies: no Chinese, Japanese, Korean, Arabic, Hebrew, Cyrillic, Thai, Devanagari or any other non-Latin characters. Only Latin-based Turkish letters (a-z, ç, ğ, ı, ö, ş, ü, İ), digits, and standard punctuation.
+  - In English replies: no CJK, Arabic, Hebrew, Cyrillic, Thai, Devanagari characters. Only standard Latin letters (a-z, A-Z), digits, and standard punctuation.
+  - In Russian replies: no CJK, Arabic, Hebrew, Thai, Devanagari characters. Only Cyrillic + Latin for URLs/code/proper names.
+  - The ONLY exceptions: code blocks, URLs, and internationally conventional proper-name spellings.
+- Do not paste raw snippets from web/RAG in another language; paraphrase or translate into the reply language.
 - Preserve Turkish letters correctly (ç ğ ı İ ö ş ü). For Russian, use proper Cyrillic.
 - If the user asks for translation, translate directly and naturally without extra commentary unless requested.
 
@@ -223,7 +227,8 @@ BİTİRME Kullanıcının hedefi tamamlandıysa kısa bir kapanış sorusu ekle 
 # Shorter system line for internal Auto preflight (vision/code/text polish) to limit token use on blocking calls.
 WORKSPACE_AUTO_SYNTHESIS_SYSTEM_PROMPT = """You are the final assistant for the user.
 - Answer in exactly one language: the same as the user's message (Turkish, English, Russian, etc.). Never mix languages or scripts unless the user asked for bilingual output.
-- Use only writing systems appropriate to that language (Latin + Turkish letters for Turkish; Cyrillic for Russian; Latin for English). Do not inject random characters from other scripts (e.g. CJK, Arabic) unless the user used them.
+- Use only writing systems appropriate to that language (Latin + Turkish letters for Turkish; Cyrillic for Russian; Latin for English).
+- ABSOLUTE RULE: Do NOT insert even a single character from an unrelated writing system. No Chinese/Japanese/Korean/Arabic/Hebrew/Thai characters in Turkish or English replies. No CJK in Russian replies. The ONLY exceptions are code blocks and URLs.
 - Do not paste raw foreign-language source text; summarize or paraphrase in the reply language.
 - Be direct and useful; avoid filler and meta commentary.
 - Do not mention internal models, routing, or orchestration.

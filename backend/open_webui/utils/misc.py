@@ -587,6 +587,47 @@ def validate_email_format(email: str) -> bool:
     return bool(re.match(r'[^@]+@[^@]+\.[^@]+', email))
 
 
+# Emoji / pictograph ranges for sidebar chat titles (avoid a single huge BMP→SMP range that would strip CJK).
+_CHAT_TITLE_EMOJI_RE = re.compile(
+    '['
+    '\U0001F1E6-\U0001F1FF'  # regional indicators (flags)
+    '\U0001F300-\U0001F5FF'  # Misc Symbols and Pictographs
+    '\U0001F600-\U0001F64F'  # Emoticons
+    '\U0001F680-\U0001F6FF'  # Transport and Map
+    '\U0001F700-\U0001F77F'  # Alchemical Symbols
+    '\U0001F780-\U0001F7FF'  # Geometric Shapes Extended
+    '\U0001F800-\U0001F8FF'  # Supplemental Arrows-C
+    '\U0001F900-\U0001FAFF'  # Supplemental Symbols and Pictographs + Chess etc.
+    '\u00A9\u00AE'  # © ® (emoji presentation)
+    '\u203C\u2049'  # ‼ ⁉
+    '\u20E3'  # combining enclosing keycap
+    '\u2122\u2139'  # ™ ℹ
+    '\u2194-\u2199'  # arrows
+    '\u21A9-\u21AA'
+    '\u231A-\u231B'
+    '\u2328'
+    '\u23CF'
+    '\u23E9-\u23F3'
+    '\u23F8-\u23FA'
+    '\u24C2'
+    '\u25AA-\u25FE'
+    '\u2600-\u27BF'  # Misc symbols + Dingbats (covers ☀️ ❤️ etc.)
+    '\uFE0F'  # variation selector-16
+    '\u200D'  # ZWJ (emoji sequences)
+    ']+',
+    flags=re.UNICODE,
+)
+
+
+def strip_chat_title_emojis(text: str) -> str:
+    """Remove emoji and common emoji joiners from chat titles (plain text sidebar)."""
+    if not isinstance(text, str):
+        return text
+    s = _CHAT_TITLE_EMOJI_RE.sub('', text)
+    s = re.sub(r'[\s\u200d\ufe0f]+', ' ', s).strip()
+    return s
+
+
 def sanitize_filename(file_name):
     # Convert to lowercase
     lower_case_file_name = file_name.lower()

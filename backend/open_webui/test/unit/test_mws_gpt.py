@@ -29,7 +29,13 @@ from open_webui.utils.mws_gpt.team_registry import (
 )
 from open_webui.utils.mws_gpt.auto_workflow import build_auto_workflow
 from open_webui.utils.mws_gpt.orchestrator import estimate_complexity
-from open_webui.utils.mws_gpt.export_intent import parse_export_intent, export_intent_blocks_web_search
+from open_webui.utils.mws_gpt.export_intent import (
+    adjust_intent_for_attachment_counts,
+    export_intent_blocks_web_search,
+    parse_export_intent,
+    parse_structured_export_intent,
+    resolve_export_intent,
+)
 import open_webui.utils.mws_gpt.active as active_mod
 
 
@@ -222,6 +228,14 @@ def test_pick_auto_image_prefers_qwen_image():
     assert mid == 'qwen-image'
 
 
+def test_pick_auto_image_resolves_from_unfiltered_provider_ids():
+    """Team allowlist ∩ /models may drop image ids; resolve via full list + capability."""
+    av_filt = {'llama-3.3-70b-instruct'}
+    av_all = {'llama-3.3-70b-instruct', 'Qwen-Image'}
+    mid, _ = pick_auto_target_model('image_generation', av_filt, available_unfiltered=av_all)
+    assert mid == 'Qwen-Image'
+
+
 def test_pick_auto_text_prefers_llama():
     av = {'llama-3.3-70b-instruct', 'qwen3-32b'}
     mid, _ = pick_auto_target_model('text', av)
@@ -370,6 +384,27 @@ def test_parse_export_intent_x_olarak_ver():
     assert parse_export_intent('pdf olarak ver').target == 'pdf'
 
 
+def test_structured_export_intents():
+    assert parse_structured_export_intent('bunları tek pdf yap').kind == 'image_pdf'
+    assert parse_structured_export_intent('bunları zip yap').kind == 'archive_zip'
+    assert parse_structured_export_intent('pdf birleştir').kind == 'pdf_merge'
+    assert parse_structured_export_intent('bunu word olarak çevir').kind == 'conversion_unavailable'
+    assert parse_structured_export_intent('pdf metin olarak ver').kind == 'pdf_extract_text'
+    assert parse_structured_export_intent('pdf sayfalara böl').kind == 'pdf_split_zip'
+
+
+def test_adjust_intent_multi_png_to_zip():
+    base = parse_export_intent('png ver')
+    assert base is not None
+    adj = adjust_intent_for_attachment_counts(base, n_images=2, n_pdfs=0, message_lower='png ver')
+    assert adj.kind == 'archive_zip'
+
+
+def test_resolve_export_intent_zip_phrase():
+    r = resolve_export_intent('hepsini zip olarak indir')
+    assert r is not None and r.kind == 'archive_zip'
+
+
 def test_extract_last_image_skips_prior_pdf():
     uid_img = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
     uid_pdf = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
@@ -422,6 +457,9 @@ def test_wants_image_edit_pipeline_turn():
     assert wants_image_edit_pipeline_turn('remove the background')
     assert wants_image_edit_pipeline_turn('bunu daha resmi yap')
     assert wants_image_edit_pipeline_turn('turn this into a formal portrait')
+    assert wants_image_edit_pipeline_turn('bu fotoğrafa çok benzer bir şey çiz')
+    assert wants_image_edit_pipeline_turn('fotoğrafı görüp buna benzer üret')
+    assert wants_image_edit_pipeline_turn('recreate this photo in higher quality')
     assert wants_image_edit_pipeline_turn('saç rengini sarı yap')
     assert wants_image_edit_pipeline_turn('измени фон на офис')
     assert not wants_image_edit_pipeline_turn('bu görselde ne var')
@@ -503,3 +541,284 @@ def test_extract_file_id_from_relative_api_path():
     uid = '768b6e57-0866-4800-b3cc-51310806a6ae'
     assert extract_file_id(f'/api/v1/files/{uid}/content') == uid
     assert extract_file_id(f'https://localhost:8080/api/v1/files/{uid}/content') == uid
+
+
+# ============================================================================
+# ROUTING QUALITY TESTS — Critical routing failure prevention
+# ============================================================================
+
+from open_webui.utils.mws_gpt.team_registry import (
+    MODEL_CAPABILITIES,
+    UI_CATEGORY_LABEL,
+    UI_CATEGORY_SORT_KEY,
+    get_model_capability,
+)
+from open_webui.utils.mws_gpt.router import RoutingDecision, _compute_confidence
+
+
+# --- Test 1: Plain text question routes to text model, NEVER image_generation ---
+def test_plain_text_routes_to_text():
+    """'Merhaba, bugün nasılsın?' must route to text, not image."""
+    cfg = SimpleNamespace(MWS_GPT_AUTO_ROUTING=True, MWS_GPT_DEFAULT_TEXT_MODEL='', MWS_GPT_ORCHESTRATION=True)
+    models = {
+        'Qwen3-235B-A22B-Instruct-2507-FP8': {'id': 'Qwen3-235B-A22B-Instruct-2507-FP8', 'tags': [{'name': 'mws'}]},
+        'qwen-image': {'id': 'qwen-image', 'tags': [{'name': 'mws'}]},
+    }
+    out = decide_mws_model(
+        manual_model_id='auto',
+        message_text='Merhaba, bugün nasılsın?',
+        attachments=set(),
+        input_mode=None,
+        openai_models=models,
+        config=cfg,
+    )
+    assert out['modality'] == 'text'
+    assert out['model_id'] != 'qwen-image'
+
+
+# --- Test 2: Explicit image generation routes correctly ---
+def test_explicit_image_generation():
+    """'Bana bir kırmızı araba çiz' must route to image_generation."""
+    mod, _ = classify_task_modality(message_text='Bana bir kırmızı araba çiz', attachments=set(), input_mode=None)
+    assert mod == 'image_generation'
+
+
+def test_turkish_ascii_ucan_at_ciz_routes_image():
+    """ASCII 'ciz' + 'ucan at' must classify as image_generation (Auto → qwen-image)."""
+    mod, _ = classify_task_modality(message_text='bana ucan at ciz', attachments=set(), input_mode=None)
+    assert mod == 'image_generation'
+
+
+# --- Test 3: Memory question NEVER routes to image_generation ---
+def test_memory_question_not_image():
+    """'Benim adım ne ve bana demin ne resmi çizdin?' must be text, not image."""
+    mod, reason = classify_task_modality(
+        message_text='Benim adım ne ve bana demin ne resmi çizdin?',
+        attachments=set(),
+        input_mode=None,
+    )
+    assert mod == 'text', f'Expected text but got {mod} ({reason})'
+
+
+def test_memory_question_what_did_you_draw():
+    """'Demin ne çizdin?' is a memory question, not a draw command."""
+    mod, reason = classify_task_modality(
+        message_text='Demin ne çizdin?',
+        attachments=set(),
+        input_mode=None,
+    )
+    assert mod == 'text', f'Expected text but got {mod} ({reason})'
+
+
+def test_memory_question_continue_previous():
+    """'Önceki konuşmadan devam et' is memory/context."""
+    mod, reason = classify_task_modality(
+        message_text='Önceki konuşmadan devam et',
+        attachments=set(),
+        input_mode=None,
+    )
+    assert mod == 'text', f'Expected text but got {mod} ({reason})'
+
+
+def test_memory_question_english_what_image():
+    """'What image did you draw earlier?' is a memory reference."""
+    mod, reason = classify_task_modality(
+        message_text='What image did you draw earlier?',
+        attachments=set(),
+        input_mode=None,
+    )
+    assert mod == 'text', f'Expected text but got {mod} ({reason})'
+
+
+def test_memory_question_my_name():
+    """'Benim adım ne?' is a pure text/memory question."""
+    mod, reason = classify_task_modality(
+        message_text='Benim adım ne?',
+        attachments=set(),
+        input_mode=None,
+    )
+    assert mod == 'text', f'Expected text but got {mod} ({reason})'
+
+
+# --- Test 4: Attached image + analysis request ---
+def test_image_attachment_routes_to_vision():
+    """[image attached] 'Bunu açıkla' must route to vision."""
+    mod, _ = classify_task_modality(
+        message_text='Bunu açıkla',
+        attachments={'image'},
+        input_mode=None,
+    )
+    assert mod == 'vision'
+
+
+# --- Test 5: Audio transcription ---
+def test_audio_attachment_routes_to_text():
+    """[audio attached] must route to text (not whisper for chat)."""
+    mod, _ = classify_task_modality(
+        message_text='Bunu yazıya dök',
+        attachments={'audio'},
+        input_mode=None,
+    )
+    assert mod == 'text'
+
+
+# --- Test 6: Code fixing ---
+def test_code_fix_routes_to_code():
+    """'Bu kodu düzelt: ...' must route to code."""
+    mod, _ = classify_task_modality(
+        message_text='Bu kodu düzelt: def foo(): return',
+        attachments=set(),
+        input_mode=None,
+    )
+    assert mod == 'code'
+
+
+# --- Test 7: Embedding model never chosen for text chat ---
+def test_embedding_model_never_for_chat():
+    """Auto must never pick an embedding model for normal text chat."""
+    cfg = SimpleNamespace(MWS_GPT_AUTO_ROUTING=True, MWS_GPT_DEFAULT_TEXT_MODEL='', MWS_GPT_ORCHESTRATION=True)
+    models = {
+        'bge-m3': {'id': 'bge-m3', 'tags': [{'name': 'mws'}]},
+        'qwen3-32b': {'id': 'qwen3-32b', 'tags': [{'name': 'mws'}]},
+    }
+    out = decide_mws_model(
+        manual_model_id='auto',
+        message_text='Merhaba',
+        attachments=set(),
+        input_mode=None,
+        openai_models=models,
+        config=cfg,
+    )
+    assert out['model_id'] != 'bge-m3'
+
+
+# --- Test 8: Audio model never chosen for text chat ---
+def test_audio_model_never_for_chat():
+    """Auto must never pick whisper for normal text chat."""
+    cfg = SimpleNamespace(MWS_GPT_AUTO_ROUTING=True, MWS_GPT_DEFAULT_TEXT_MODEL='', MWS_GPT_ORCHESTRATION=True)
+    models = {
+        'whisper-medium': {'id': 'whisper-medium', 'tags': [{'name': 'mws'}]},
+        'llama-3.3-70b-instruct': {'id': 'llama-3.3-70b-instruct', 'tags': [{'name': 'mws'}]},
+    }
+    out = decide_mws_model(
+        manual_model_id='auto',
+        message_text='Bugün hava nasıl?',
+        attachments=set(),
+        input_mode=None,
+        openai_models=models,
+        config=cfg,
+    )
+    assert out['model_id'] != 'whisper-medium'
+
+
+# --- Test 9: Model capability registry completeness ---
+def test_all_allowlist_models_have_capabilities():
+    """Every model in TEAM_ALLOWLIST must have capability metadata."""
+    from open_webui.utils.mws_gpt.team_registry import TEAM_ALLOWLIST
+    for mid in TEAM_ALLOWLIST:
+        assert mid in MODEL_CAPABILITIES, f'{mid} missing from MODEL_CAPABILITIES'
+        mc = MODEL_CAPABILITIES[mid]
+        assert mc.primary_cap in ('text', 'code', 'vision', 'audio_transcription', 'image_generation', 'embedding')
+
+
+# --- Test 10: UI category labels exist for all categories ---
+def test_ui_category_labels_complete():
+    categories_used = {mc.ui_category for mc in MODEL_CAPABILITIES.values()}
+    for cat in categories_used:
+        assert cat in UI_CATEGORY_LABEL, f'Missing UI_CATEGORY_LABEL for {cat}'
+        assert cat in UI_CATEGORY_SORT_KEY, f'Missing UI_CATEGORY_SORT_KEY for {cat}'
+
+
+# --- Test 11: Routing decision object is well-formed ---
+def test_routing_decision_object_in_auto():
+    cfg = SimpleNamespace(MWS_GPT_AUTO_ROUTING=True, MWS_GPT_DEFAULT_TEXT_MODEL='', MWS_GPT_ORCHESTRATION=True)
+    models = {
+        'Qwen3-235B-A22B-Instruct-2507-FP8': {'id': 'Qwen3-235B-A22B-Instruct-2507-FP8', 'tags': [{'name': 'mws'}]},
+    }
+    out = decide_mws_model(
+        manual_model_id='auto',
+        message_text='Explain quantum mechanics',
+        attachments=set(),
+        input_mode=None,
+        openai_models=models,
+        config=cfg,
+    )
+    rd = out.get('routing_decision')
+    assert rd is not None
+    assert 'primary_task' in rd
+    assert 'confidence' in rd
+    assert rd['confidence'] > 0
+    assert 'selected_model' in rd
+    assert rd['selected_model'] == out['model_id']
+
+
+# --- Test 12: Confidence is high for exact capability match ---
+def test_confidence_high_for_image_match():
+    conf = _compute_confidence('image_generation', 'image_creation_intent', 'qwen-image', None)
+    assert conf >= 0.90
+
+
+def test_confidence_high_for_text_match():
+    conf = _compute_confidence('text', 'default_text', 'llama-3.3-70b-instruct', 'medium')
+    assert conf >= 0.80
+
+
+# --- Test 13: "Python nedir?" must NOT route to code ---
+def test_python_nedir_routes_to_text():
+    mod, _ = classify_task_modality(message_text='Python nedir?', attachments=set(), input_mode=None)
+    assert mod == 'text'
+
+
+# --- Test 14: Long explanation request gets medium+ complexity ---
+def test_explanation_gets_medium_complexity():
+    c, _ = estimate_complexity(
+        message_text='Nasıl çalışır açıkla',
+        modality='text',
+        attachments=set(),
+    )
+    assert c in ('medium', 'hard')
+
+
+# --- Test 15: "Bana resim çiz" + memory context mixed ---
+def test_mixed_memory_and_image_reference():
+    """'Sana ne sordum ve ne resmi çizdin?' is a memory question."""
+    mod, reason = classify_task_modality(
+        message_text='Sana ne sordum ve ne resmi çizdin?',
+        attachments=set(),
+        input_mode=None,
+    )
+    assert mod == 'text', f'Expected text but got {mod} ({reason})'
+
+
+# --- Test 16: get_model_capability returns correct data ---
+def test_get_model_capability():
+    mc = get_model_capability('qwen-image')
+    assert mc is not None
+    assert mc.primary_cap == 'image_generation'
+    assert mc.chat_allowed is False
+    assert mc.supports_image_output is True
+
+    mc_text = get_model_capability('Qwen3-235B-A22B-Instruct-2507-FP8')
+    assert mc_text is not None
+    assert mc_text.ui_category == 'reasoning'
+    assert mc_text.supports_reasoning is True
+
+
+# --- Test 17: Reasoning model preferred for hard tasks ---
+def test_hard_task_prefers_reasoning_model():
+    cfg = SimpleNamespace(MWS_GPT_AUTO_ROUTING=True, MWS_GPT_DEFAULT_TEXT_MODEL='', MWS_GPT_ORCHESTRATION=True)
+    models = {
+        'Qwen3-235B-A22B-Instruct-2507-FP8': {'id': 'Qwen3-235B-A22B-Instruct-2507-FP8', 'tags': [{'name': 'mws'}]},
+        'llama-3.1-8b-instruct': {'id': 'llama-3.1-8b-instruct', 'tags': [{'name': 'mws'}]},
+        'qwen-image': {'id': 'qwen-image', 'tags': [{'name': 'mws'}]},
+    }
+    out = decide_mws_model(
+        manual_model_id='auto',
+        message_text='Bu teoremi titiz bir şekilde kanıtla, aksiyomlardan başla.',
+        attachments=set(),
+        input_mode=None,
+        openai_models=models,
+        config=cfg,
+    )
+    assert out['model_id'] == 'Qwen3-235B-A22B-Instruct-2507-FP8'
+    assert out.get('complexity') == 'hard'

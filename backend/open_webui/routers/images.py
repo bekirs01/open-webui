@@ -571,6 +571,9 @@ async def image_generations(
             if request.app.state.config.IMAGES_OPENAI_API_VERSION:
                 url = f'{url}?api-version={request.app.state.config.IMAGES_OPENAI_API_VERSION}'
 
+            extra_params = dict(request.app.state.config.IMAGES_OPENAI_API_PARAMS or {})
+            extra_params.pop('n', None)
+
             data = {
                 'model': model,
                 'prompt': form_data.prompt,
@@ -584,11 +587,7 @@ async def image_generations(
                     )
                     else {'response_format': 'b64_json'}
                 ),
-                **(
-                    {}
-                    if not request.app.state.config.IMAGES_OPENAI_API_PARAMS
-                    else request.app.state.config.IMAGES_OPENAI_API_PARAMS
-                ),
+                **extra_params,
             }
             if form_data.negative_prompt is not None:
                 data['negative_prompt'] = form_data.negative_prompt

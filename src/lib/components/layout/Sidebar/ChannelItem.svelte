@@ -74,9 +74,9 @@
 <div
 	id="sidebar-channel-item"
 	bind:this={itemElement}
-	class=" w-full {className} rounded-xl flex relative group hover:bg-gray-100 dark:hover:bg-gray-900 {$page
+	class=" w-full {className} rounded-xl flex relative group hover:bg-gray-100 dark:hover:bg-neutral-800 {$page
 		.url.pathname === `/channels/${channel.id}`
-		? 'bg-gray-100 dark:bg-gray-900 selected'
+		? 'bg-gray-100 dark:bg-neutral-800 selected'
 		: ''} {channel?.type === 'dm' ? 'px-1 py-[3px]' : 'p-1'}  {channel?.unread_count > 0
 		? 'font-medium dark:text-white text-black'
 		: ' dark:text-gray-400 text-gray-600'} cursor-pointer select-none"
@@ -114,7 +114,7 @@
 								<img
 									src={`${WEBUI_API_BASE_URL}/users/${u.id}/profile/image`}
 									alt={u.name}
-									class=" size-5.5 rounded-full border-2 border-white dark:border-gray-900 {index ===
+									class=" size-5.5 rounded-full border-2 border-white dark:border-neutral-900 {index ===
 									1
 										? '-ml-2.5'
 										: ''}"
@@ -132,7 +132,7 @@
 										<span
 											class="relative inline-flex size-2 rounded-full {channelMembers[0]?.is_active
 												? 'bg-green-500'
-												: 'bg-gray-300 dark:bg-gray-700'} border-[1.5px] border-white dark:border-gray-900"
+												: 'bg-gray-300 dark:bg-gray-700'} border-[1.5px] border-white dark:border-neutral-900"
 										></span>
 									</span>
 								</div>
@@ -208,7 +208,7 @@
 		>
 			<button
 				type="button"
-				class="p-0.5 dark:hover:bg-gray-850 rounded-lg touch-auto"
+				class="p-0.5 dark:hover:bg-neutral-800 rounded-lg touch-auto"
 				on:click={async (e) => {
 					e.stopImmediatePropagation();
 					e.stopPropagation();
@@ -235,7 +235,7 @@
 		>
 			<button
 				type="button"
-				class="p-0.5 dark:hover:bg-gray-850 rounded-lg touch-auto"
+				class="p-0.5 dark:hover:bg-neutral-800 rounded-lg touch-auto"
 				on:click={(e) => {
 					e.stopImmediatePropagation();
 					e.stopPropagation();

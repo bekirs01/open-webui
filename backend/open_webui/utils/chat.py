@@ -57,30 +57,19 @@ log = logging.getLogger(__name__)
 
 
 async def _mws_export_tool_completion_response(form_data: dict):
-    """Short assistant text after server-side export; files were emitted via websocket."""
+    """Short assistant text after server-side export; files in JSON + websocket (UI needs id for preview)."""
     import time
 
     model = form_data.get('model') or ''
     content = (form_data.get('_mws_export_assistant_content') or 'Done.').strip()
+    export_files = form_data.get('_mws_export_result_files') or []
+    # Always JSON (non-stream): streaming parser drops message.files; export must include files on the assistant message.
     cid = f'chatcmpl-mws-{uuid.uuid4().hex[:24]}'
     created = int(time.time())
-    base_chunk = {
-        'id': cid,
-        'object': 'chat.completion.chunk',
-        'created': created,
-        'model': model,
-    }
-    if form_data.get('stream'):
 
-        async def gen():
-            yield f"data: {json.dumps({**base_chunk, 'choices': [{'index': 0, 'delta': {'role': 'assistant'}, 'finish_reason': None}]})}\n\n"
-            # stream content in one chunk (short)
-            yield f"data: {json.dumps({**base_chunk, 'choices': [{'index': 0, 'delta': {'content': content}, 'finish_reason': None}]})}\n\n"
-            yield f"data: {json.dumps({**base_chunk, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]})}\n\n"
-            yield 'data: [DONE]\n\n'
-
-        return StreamingResponse(gen(), media_type='text/event-stream')
-
+    msg: dict = {'role': 'assistant', 'content': content}
+    if export_files:
+        msg['files'] = export_files
     return {
         'id': cid,
         'object': 'chat.completion',
@@ -89,7 +78,7 @@ async def _mws_export_tool_completion_response(form_data: dict):
         'choices': [
             {
                 'index': 0,
-                'message': {'role': 'assistant', 'content': content},
+                'message': msg,
                 'finish_reason': 'stop',
             }
         ],
@@ -440,6 +429,12 @@ async def chat_completed(request: Request, form_data: dict, user: Any):
             form_data=data,
             extra_params=extra_params,
         )
+        try:
+            from open_webui.utils.long_term_memory.pipeline import schedule_memory_extraction
+
+            schedule_memory_extraction(request, result, user)
+        except Exception as ex:
+            log.debug('schedule_memory_extraction: %s', ex)
         return result
     except Exception as e:
         raise Exception(f'Error: {e}')

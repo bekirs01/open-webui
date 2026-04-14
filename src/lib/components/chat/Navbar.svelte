@@ -56,6 +56,10 @@
 	export let archiveChatHandler: (id: string) => void;
 	export let moveChatHandler: (id: string, folderId: string) => void;
 
+	export let continueInNewChatHandler: (() => void) | undefined = undefined;
+	export let importContextHandler: (() => void) | undefined = undefined;
+	export let clearCrossChatHandler: (() => void) | undefined = undefined;
+
 	let closedBannerIds = [];
 
 	let showShareChatModal = false;
@@ -201,6 +205,8 @@
 								archiveChatHandler(chat.id);
 							}}
 							{moveChatHandler}
+							{continueInNewChatHandler}
+							{importContextHandler}
 						>
 							<button
 								class="flex cursor-pointer px-2 py-2 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-850 transition"
@@ -259,6 +265,27 @@
 			</div>
 		</div>
 	</div>
+
+	{#if chat?.meta?.cross_chat && !$temporaryChatEnabled}
+		<div class="w-full z-30 text-center px-2 pb-0.5">
+			<div
+				class="inline-flex flex-wrap items-center justify-center gap-2 text-xs text-gray-600 dark:text-gray-300 bg-gray-100/90 dark:bg-gray-800/90 rounded-lg px-2 py-1 max-w-[min(100%,42rem)]"
+			>
+				<span class="truncate"
+					>{$i18n.t('Imported context')}: {chat.meta.cross_chat.label || '…'}</span
+				>
+				{#if clearCrossChatHandler}
+					<button
+						type="button"
+						class="shrink-0 underline text-gray-500 hover:text-gray-800 dark:hover:text-white"
+						on:click={() => clearCrossChatHandler?.()}
+					>
+						{$i18n.t('Remove')}
+					</button>
+				{/if}
+			</div>
+		</div>
+	{/if}
 
 	{#if $temporaryChatEnabled && ($chatId ?? '').startsWith('local:')}
 		<div class=" w-full z-30 text-center">

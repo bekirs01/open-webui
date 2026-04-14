@@ -15,9 +15,11 @@
 
 	// Addons
 	let enableMemory = false;
+	let memoryAutoExtract = true;
 
 	onMount(async () => {
-		enableMemory = $settings?.memory ?? false;
+		enableMemory = $settings?.memory ?? true;
+		memoryAutoExtract = $settings?.memory_auto_extract ?? true;
 	});
 </script>
 
@@ -55,6 +57,24 @@
 						}}
 					/>
 				</div>
+			</div>
+
+			<div class="flex items-center justify-between mb-2 mt-3">
+				<Tooltip
+					content={$i18n.t(
+						'When enabled, the assistant may save short useful facts from your messages after each reply (you can edit or delete them in Manage).'
+					)}
+				>
+					<div class="text-xs font-medium text-gray-700 dark:text-gray-300 max-w-[80%]">
+						{$i18n.t('Auto-save memories from chat')}
+					</div>
+				</Tooltip>
+				<Switch
+					bind:state={memoryAutoExtract}
+					on:change={async () => {
+						saveSettings({ memory_auto_extract: memoryAutoExtract });
+					}}
+				/>
 			</div>
 		</div>
 

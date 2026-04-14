@@ -12,18 +12,21 @@ _MARKDOWN_IMG = re.compile(r'!\[[^\]]*\]\(([^)]+)\)')
 
 def extract_last_image_artifact_for_export(messages: list[dict[str, Any]] | None) -> dict[str, Any] | None:
     """
-    Last assistant raster image only (for image→PDF/PNG/JPEG/WEBP).
+    Last raster image from assistant OR user messages (for image→PDF/PNG/JPEG/WEBP).
 
-    Skips non-image attachments (e.g. a prior PDF export) so repeated format
-    requests still convert from the original generated image.
+    Checks assistant messages first, then user-uploaded images INCLUDING the current
+    user turn so "photo + convert to jpg" works in a single message.
     """
     if not messages:
         return None
 
     tail_user = _last_user_index(messages)
-    search = messages[:tail_user] if tail_user is not None else messages
+    # Include all messages up to AND including the last user message
+    search_before = messages[:tail_user] if tail_user is not None else messages
+    current_user = messages[tail_user] if tail_user is not None else None
 
-    for m in reversed(search):
+    # Pass 1: assistant images (generated / returned by AI) — before last user turn
+    for m in reversed(search_before):
         if m.get('role') != 'assistant':
             continue
 
@@ -44,21 +47,58 @@ def extract_last_image_artifact_for_export(messages: list[dict[str, Any]] | None
         if img_url:
             return {'kind': 'image', 'url': img_url, 'file_id': None}
 
+    # Pass 2: current user message (photo attached in same turn as export request)
+    if current_user:
+        hit = _extract_image_from_message(current_user)
+        if hit:
+            return hit
+
+    # Pass 3: user-uploaded images from earlier turns
+    for m in reversed(search_before):
+        if m.get('role') != 'user':
+            continue
+        hit = _extract_image_from_message(m)
+        if hit:
+            return hit
+
+    return None
+
+
+def _extract_image_from_message(m: dict[str, Any]) -> dict[str, Any] | None:
+    """Extract image artifact from a single message (files list or content array)."""
+    for f in m.get('files') or []:
+        if not isinstance(f, dict):
+            continue
+        url = (f.get('url') or '').strip()
+        ct = (f.get('content_type') or '').lower()
+        typ = f.get('type')
+        fid = f.get('id')
+        if typ == 'image' or ct.startswith('image/'):
+            if url:
+                return {'kind': 'image', 'url': url, 'file_id': fid}
+            if fid:
+                return {'kind': 'image', 'url': str(fid), 'file_id': fid}
+
+    img_url = _image_url_from_content(m.get('content'))
+    if img_url:
+        return {'kind': 'image', 'url': img_url, 'file_id': None}
     return None
 
 
 def extract_last_artifact_for_export(messages: list[dict[str, Any]] | None) -> dict[str, Any] | None:
     """
     Inspect conversation messages (before LLM-specific stripping). Returns last exportable artifact
-    from assistant messages before the final user turn.
+    from assistant or user messages INCLUDING the current user turn.
     """
     if not messages:
         return None
 
     tail_user = _last_user_index(messages)
-    search = messages[:tail_user] if tail_user is not None else messages
+    search_before = messages[:tail_user] if tail_user is not None else messages
+    current_user = messages[tail_user] if tail_user is not None else None
 
-    for m in reversed(search):
+    # Pass 1: assistant artifacts (generated content)
+    for m in reversed(search_before):
         if m.get('role') != 'assistant':
             continue
 
@@ -75,7 +115,6 @@ def extract_last_artifact_for_export(messages: list[dict[str, Any]] | None) -> d
                         'file_id': f.get('id'),
                     }
             if f.get('type') == 'file' and url and not ct.startswith('image/'):
-                # prior document export
                 return {
                     'kind': 'file',
                     'url': url,
@@ -94,6 +133,47 @@ def extract_last_artifact_for_export(messages: list[dict[str, Any]] | None) -> d
                 'text': text.strip(),
             }
 
+    # Pass 2: current user turn (file attached in same message as export request)
+    if current_user:
+        hit = _extract_any_artifact_from_message(current_user)
+        if hit:
+            return hit
+
+    # Pass 3: user-uploaded files from earlier turns
+    for m in reversed(search_before):
+        if m.get('role') != 'user':
+            continue
+        hit = _extract_any_artifact_from_message(m)
+        if hit:
+            return hit
+
+    return None
+
+
+def _extract_any_artifact_from_message(m: dict[str, Any]) -> dict[str, Any] | None:
+    """Extract any exportable artifact (image or file) from a single message."""
+    for f in m.get('files') or []:
+        if not isinstance(f, dict):
+            continue
+        ct = (f.get('content_type') or f.get('type') or '').lower()
+        url = f.get('url') or ''
+        fid = f.get('id')
+        if f.get('type') == 'image' or ct.startswith('image/'):
+            if url:
+                return {'kind': 'image', 'url': url, 'file_id': fid}
+            if fid:
+                return {'kind': 'image', 'url': str(fid), 'file_id': fid}
+        if url and not ct.startswith('image/'):
+            return {
+                'kind': 'file',
+                'url': url,
+                'file_id': fid,
+                'content_type': ct,
+            }
+
+    img_url = _image_url_from_content(m.get('content'))
+    if img_url:
+        return {'kind': 'image', 'url': img_url, 'file_id': None}
     return None
 
 

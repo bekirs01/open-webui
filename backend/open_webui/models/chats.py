@@ -9,7 +9,7 @@ from open_webui.internal.db import Base, JSONField, get_db, get_db_context
 from open_webui.models.tags import TagModel, Tag, Tags
 from open_webui.models.folders import Folders
 from open_webui.models.chat_messages import ChatMessage, ChatMessages
-from open_webui.utils.misc import sanitize_data_for_db, sanitize_text_for_db
+from open_webui.utils.misc import sanitize_data_for_db, sanitize_text_for_db, strip_chat_title_emojis
 
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import (
@@ -126,6 +126,7 @@ class ChatFileModel(BaseModel):
 class ChatForm(BaseModel):
     chat: dict
     folder_id: Optional[str] = None
+    meta: Optional[dict] = None
 
 
 class ChatImportForm(ChatForm):
@@ -259,6 +260,15 @@ class ChatTable:
         """Recursively remove null bytes from strings in dict/list structures."""
         return sanitize_data_for_db(obj)
 
+    def _normalize_chat_title(self, title: str) -> str:
+        """Plain-text chat title: strip emojis; empty or emoji-only → 'New Chat'."""
+        if not isinstance(title, str):
+            return 'New Chat'
+        stripped = strip_chat_title_emojis(title)
+        if stripped.strip():
+            return self._clean_null_bytes(stripped)
+        return 'New Chat'
+
     def _sanitize_chat_row(self, chat_item):
         """
         Clean a Chat SQLAlchemy model's title + chat JSON,
@@ -285,15 +295,17 @@ class ChatTable:
     def insert_new_chat(self, user_id: str, form_data: ChatForm, db: Optional[Session] = None) -> Optional[ChatModel]:
         with get_db_context(db) as db:
             id = str(uuid.uuid4())
+            meta = form_data.meta if getattr(form_data, 'meta', None) is not None else {}
             chat = ChatModel(
                 **{
                     'id': id,
                     'user_id': user_id,
-                    'title': self._clean_null_bytes(
+                    'title': self._normalize_chat_title(
                         form_data.chat['title'] if 'title' in form_data.chat else 'New Chat'
                     ),
                     'chat': self._clean_null_bytes(form_data.chat),
                     'folder_id': form_data.folder_id,
+                    'meta': meta if isinstance(meta, dict) else {},
                     'created_at': int(time.time()),
                     'updated_at': int(time.time()),
                 }
@@ -327,7 +339,7 @@ class ChatTable:
             **{
                 'id': id,
                 'user_id': user_id,
-                'title': self._clean_null_bytes(form_data.chat['title'] if 'title' in form_data.chat else 'New Chat'),
+                'title': self._normalize_chat_title(form_data.chat['title'] if 'title' in form_data.chat else 'New Chat'),
                 'chat': self._clean_null_bytes(form_data.chat),
                 'meta': form_data.meta,
                 'pinned': form_data.pinned,
@@ -377,7 +389,9 @@ class ChatTable:
             with get_db_context(db) as db:
                 chat_item = db.get(Chat, id)
                 chat_item.chat = self._clean_null_bytes(chat)
-                chat_item.title = self._clean_null_bytes(chat['title']) if 'title' in chat else 'New Chat'
+                chat_item.title = (
+                    self._normalize_chat_title(chat['title']) if 'title' in chat else 'New Chat'
+                )
 
                 chat_item.updated_at = int(time.time())
 
@@ -388,13 +402,40 @@ class ChatTable:
         except Exception:
             return None
 
+    def merge_chat_meta_by_id(
+        self,
+        id: str,
+        user_id: str,
+        updates: dict,
+        db: Optional[Session] = None,
+    ) -> Optional[ChatModel]:
+        """Merge keys into chat.meta; if a value is None, remove that key."""
+        try:
+            with get_db_context(db) as db:
+                row = db.query(Chat).filter_by(id=id, user_id=user_id).first()
+                if row is None:
+                    return None
+                meta = dict(row.meta or {})
+                for k, v in updates.items():
+                    if v is None:
+                        meta.pop(k, None)
+                    else:
+                        meta[k] = v
+                row.meta = meta
+                row.updated_at = int(time.time())
+                db.commit()
+                db.refresh(row)
+                return ChatModel.model_validate(row)
+        except Exception:
+            return None
+
     def update_chat_title_by_id(self, id: str, title: str) -> Optional[ChatModel]:
         chat = self.get_chat_by_id(id)
         if chat is None:
             return None
 
         chat = chat.chat
-        chat['title'] = title
+        chat['title'] = self._normalize_chat_title(title)
 
         return self.update_chat_by_id(id, chat)
 

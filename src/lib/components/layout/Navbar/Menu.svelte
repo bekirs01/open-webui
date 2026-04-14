@@ -18,7 +18,8 @@
 		settings,
 		folders,
 		showEmbeds,
-		artifactContents
+		artifactContents,
+		config
 	} from '$lib/stores';
 
 	import { getChatById } from '$lib/apis/chats';
@@ -34,6 +35,8 @@
 	import ArchiveBox from '$lib/components/icons/ArchiveBox.svelte';
 	import Messages from '$lib/components/chat/Messages.svelte';
 	import Download from '$lib/components/icons/Download.svelte';
+	import ArrowRightCircle from '$lib/components/icons/ArrowRightCircle.svelte';
+	import ArrowDownTray from '$lib/components/icons/ArrowDownTray.svelte';
 
 	const i18n = getContext('i18n');
 
@@ -47,6 +50,9 @@
 	// export let tagHandler: Function;
 
 	export let chat;
+
+	export let continueInNewChatHandler: (() => void) | undefined = undefined;
+	export let importContextHandler: (() => void) | undefined = undefined;
 	export let onClose: Function = () => {};
 
 	let showFullMessages = false;
@@ -403,6 +409,26 @@
 
 			{#if !$temporaryChatEnabled && chat?.id}
 				<hr class="border-gray-50/30 dark:border-gray-800/30 my-1" />
+
+				{#if $config?.features?.enable_memories && ($user?.role === 'admin' || ($user?.permissions?.features?.memories ?? true)) && continueInNewChatHandler && importContextHandler}
+					<button
+						draggable="false"
+						class="flex gap-2 items-center px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl select-none w-full"
+						on:click={() => continueInNewChatHandler?.()}
+					>
+						<ArrowRightCircle className="size-4" strokeWidth="1.5" />
+						<div class="flex items-center line-clamp-1">{$i18n.t('Continue in new chat')}</div>
+					</button>
+					<button
+						draggable="false"
+						class="flex gap-2 items-center px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl select-none w-full"
+						on:click={() => importContextHandler?.()}
+					>
+						<ArrowDownTray className="size-4" strokeWidth="1.5" />
+						<div class="flex items-center line-clamp-1">{$i18n.t('Import context from chat…')}</div>
+					</button>
+					<hr class="border-gray-50/30 dark:border-gray-800/30 my-1" />
+				{/if}
 
 				{#if $folders.length > 0}
 					<DropdownSub maxWidth={200}>

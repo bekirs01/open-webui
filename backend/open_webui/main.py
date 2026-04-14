@@ -89,6 +89,7 @@ from open_webui.routers import (
     files,
     functions,
     memories,
+    cross_chat,
     models,
     knowledge,
     prompts,
@@ -1545,6 +1546,7 @@ app.include_router(tools.router, prefix='/api/v1/tools', tags=['tools'])
 app.include_router(skills.router, prefix='/api/v1/skills', tags=['skills'])
 
 app.include_router(memories.router, prefix='/api/v1/memories', tags=['memories'])
+app.include_router(cross_chat.router, prefix='/api/v1/cross-chat', tags=['cross-chat'])
 app.include_router(folders.router, prefix='/api/v1/folders', tags=['folders'])
 app.include_router(groups.router, prefix='/api/v1/groups', tags=['groups'])
 app.include_router(files.router, prefix='/api/v1/files', tags=['files'])
@@ -1745,7 +1747,9 @@ async def chat_completion(
             from open_webui.utils.mws_gpt.registry import collect_attachment_kinds
             from open_webui.utils.mws_gpt.team_registry import pick_text_model_for_chat_followup
 
-            if get_primary_capability(model_id) == 'audio_transcription':
+            cap = get_primary_capability(model_id)
+
+            if cap == 'audio_transcription':
                 att = collect_attachment_kinds(form_data.get('files'), form_data.get('messages'))
                 if 'audio' in att:
                     rep = pick_text_model_for_chat_followup(request)
@@ -1759,8 +1763,23 @@ async def chat_completion(
                             rep,
                             form_data.get('_mws_whisper_selected_model_id'),
                         )
+
+            elif cap in ('image_generation', 'embedding'):
+                original_model = model_id
+                form_data['model'] = 'auto'
+                resolved_id, routing_meta = resolve_mws_chat_model(request, form_data)
+                if resolved_id:
+                    form_data['model'] = resolved_id
+                    model_id = resolved_id
+                else:
+                    form_data['model'] = original_model
+                request.state.mws_routing = routing_meta
+                log.info(
+                    '[MWS] %s model "%s" selected for chat; re-routed via Auto → %s',
+                    cap, original_model, model_id,
+                )
         except Exception as e:
-            log.debug('[MWS] whisper→text swap at chat entry: %s', e)
+            log.debug('[MWS] model cap swap at chat entry: %s', e)
 
     if is_mws_gpt_active(request.app.state.config) and model_id and get_primary_capability(model_id) is not None:
         ok, err = validate_chat_model_selection(model_id, form_data)

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 import re
 import site
 from html import escape
@@ -18,6 +19,19 @@ from PIL import Image as PILImage
 from open_webui.env import FONTS_DIR
 
 log = logging.getLogger(__name__)
+
+
+def fpdf_output_bytes(pdf: FPDF) -> bytes:
+    """
+    Normalize fpdf2 output to raw PDF bytes.
+    Some versions return str or bytearray; PDF binary must not be UTF-8 encoded.
+    """
+    raw = pdf.output()
+    if isinstance(raw, (bytes, bytearray)):
+        return bytes(raw)
+    if isinstance(raw, str):
+        return raw.encode('latin-1')
+    return bytes(raw)
 
 
 def _fpdf_with_unicode_fonts() -> FPDF:
@@ -75,8 +89,7 @@ def markdown_to_pdf_bytes(title: str, markdown_text: str) -> bytes:
         log.warning('markdown_to_pdf_bytes: write_html failed, fallback to plain text: %s', e)
         pdf = _fpdf_with_unicode_fonts()
         pdf.multi_cell(0, 6, md.replace('\r\n', '\n') or '(empty)')
-    raw = pdf.output()
-    return raw if isinstance(raw, (bytes, bytearray)) else bytes(raw)
+    return fpdf_output_bytes(pdf)
 
 
 def text_to_png_bytes(title: str, body: str, max_width: int = 1100) -> bytes:
@@ -129,32 +142,48 @@ def text_to_png_bytes(title: str, body: str, max_width: int = 1100) -> bytes:
 
 
 def image_bytes_to_pdf_bytes(image_bytes: bytes) -> bytes:
-    """Tek bir raster görüntüyü tek sayfalık PDF'e yerleştirir."""
-    pdf = _fpdf_with_unicode_fonts()
+    """
+    Tek sayfa PDF: sayfa boyutu görüntüyle birebir (pt ≈ px), kenar boşluğu yok.
+    A4 üzerine küçültüp beyaz çerçeve eklemez; görüntü tam sayfayı doldurur.
+    """
+    max_edge = int(os.environ.get('MWS_EXPORT_IMAGE_PDF_MAX_EDGE', '12240'))
     im = PILImage.open(io.BytesIO(image_bytes))
-    if im.mode in ('RGBA', 'LA') or (im.mode == 'P' and 'transparency' in im.info):
-        bg = PILImage.new('RGB', im.size, (255, 255, 255))
-        src = im.convert('RGBA')
-        bg.paste(src, mask=src.split()[3])
-        im = bg
-    else:
-        im = im.convert('RGB')
     iw, ih = im.size
-    page_w = pdf.w - 20
-    scale = page_w / float(iw)
-    disp_h = ih * scale
-    if disp_h > pdf.h - 20:
-        scale = (pdf.h - 20) / float(ih)
-        disp_w = iw * scale
-        disp_h = ih * scale
-    else:
-        disp_w = page_w
+    if iw < 1 or ih < 1:
+        raise ValueError('invalid_image_dimensions')
+    scale = min(1.0, float(max_edge) / float(max(iw, ih)))
+    if scale < 1.0:
+        try:
+            resample = PILImage.Resampling.LANCZOS
+        except AttributeError:
+            resample = PILImage.LANCZOS  # Pillow < 9
+        im = im.resize(
+            (max(1, int(iw * scale)), max(1, int(ih * scale))),
+            resample,
+        )
+        iw, ih = im.size
+
+    if im.mode == 'P':
+        im = im.convert('RGBA')
+
     buf = io.BytesIO()
-    im.save(buf, format='PNG')
+    if im.mode in ('RGBA', 'LA'):
+        im.save(buf, format='PNG', optimize=True)
+    else:
+        im.convert('RGB').save(buf, format='PNG', optimize=True)
     buf.seek(0)
-    pdf.image(buf, x=10, y=10, w=disp_w, h=disp_h)
-    raw = pdf.output()
-    return raw if isinstance(raw, (bytes, bytearray)) else bytes(raw)
+
+    pw, ph = float(iw), float(ih)
+    pdf = FPDF(orientation='P', unit='pt', format=(pw, ph))
+    pdf.set_margins(0, 0, 0)
+    pdf.set_auto_page_break(False, margin=0)
+    pdf.add_page()
+    pdf.image(buf, x=0, y=0, w=pw, h=ph)
+
+    out = fpdf_output_bytes(pdf)
+    if not _validate_pdf_magic(out):
+        raise ValueError('invalid_pdf_from_image')
+    return out
 
 
 def _extract_openwebui_file_id(url_or_path: str) -> str | None:
@@ -278,8 +307,153 @@ def plain_text_to_pdf_bytes(title: str, body: str) -> bytes:
     """Plain UTF-8 text to a simple PDF (no markdown)."""
     pdf = _fpdf_with_unicode_fonts()
     pdf.multi_cell(0, 6, (title or 'Export').strip() + '\n\n' + (body or '').replace('\r\n', '\n'))
-    raw = pdf.output()
-    return raw if isinstance(raw, (bytes, bytearray)) else bytes(raw)
+    return fpdf_output_bytes(pdf)
+
+
+# --- Batch export / PDF utilities (pypdf, zip) ---
+
+MAX_EXPORT_PDF_PAGES = int(os.environ.get('MWS_EXPORT_MAX_PDF_PAGES', '200'))
+MAX_EXPORT_BATCH_IMAGES = int(os.environ.get('MWS_EXPORT_MAX_BATCH_IMAGES', '50'))
+MAX_EXPORT_TOTAL_BYTES = int(os.environ.get('MWS_EXPORT_MAX_TOTAL_BYTES', str(48 * 1024 * 1024)))
+
+
+def _validate_pdf_magic(b: bytes) -> bool:
+    return bool(b) and len(b) >= 5 and b[:5] == b'%PDF-'
+
+
+def get_file_bytes_from_source(url_or_id: str) -> bytes:
+    """Open WebUI file id, API path, or http(s) URL — any stored file, not only images."""
+    return get_image_bytes_from_source(url_or_id)
+
+
+def multi_image_bytes_to_pdf_bytes(images: list[bytes]) -> bytes:
+    """Birden fazla raster görüntüyü sayfa sırası korunarak tek PDF'e yazar."""
+    if not images:
+        raise ValueError('empty_image_list')
+    if len(images) > MAX_EXPORT_BATCH_IMAGES:
+        raise ValueError('too_many_images')
+    total = 0
+    for im in images:
+        total += len(im or b'')
+        if total > MAX_EXPORT_TOTAL_BYTES:
+            raise ValueError('total_size_limit')
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    for raw in images:
+        if not raw or len(raw) < 32:
+            raise ValueError('empty_image_bytes')
+        one = image_bytes_to_pdf_bytes(raw)
+        from pypdf import PdfReader
+
+        reader = PdfReader(io.BytesIO(one))
+        for page in reader.pages:
+            writer.add_page(page)
+    out = io.BytesIO()
+    writer.write(out)
+    data = out.getvalue()
+    if not data or len(data) < 200:
+        raise ValueError('empty_pdf_output')
+    return data
+
+
+def merge_pdf_bytes_list(parts: list[bytes]) -> bytes:
+    """Birden fazla PDF'i sırayla birleştirir."""
+    if not parts:
+        raise ValueError('empty_pdf_list')
+    from pypdf import PdfReader, PdfWriter
+
+    writer = PdfWriter()
+    total_pages = 0
+    for pbytes in parts:
+        if not pbytes or not _validate_pdf_magic(pbytes):
+            raise ValueError('invalid_pdf')
+        if len(pbytes) > MAX_EXPORT_TOTAL_BYTES:
+            raise ValueError('pdf_too_large')
+        reader = PdfReader(io.BytesIO(pbytes))
+        for page in reader.pages:
+            writer.add_page(page)
+            total_pages += 1
+            if total_pages > MAX_EXPORT_PDF_PAGES:
+                raise ValueError('too_many_pages')
+    out = io.BytesIO()
+    writer.write(out)
+    data = out.getvalue()
+    if not data or len(data) < 200:
+        raise ValueError('empty_pdf_output')
+    return data
+
+
+def pdf_bytes_extract_text(pdf_bytes: bytes, max_chars: int = 1_500_000) -> str:
+    """PDF metin çıkarımı (basit; taranmış sayfalar boş olabilir)."""
+    if not pdf_bytes or not _validate_pdf_magic(pdf_bytes):
+        raise ValueError('invalid_pdf')
+    from pypdf import PdfReader
+
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    if len(reader.pages) > MAX_EXPORT_PDF_PAGES:
+        raise ValueError('too_many_pages')
+    chunks: list[str] = []
+    n = 0
+    for page in reader.pages:
+        try:
+            t = page.extract_text() or ''
+        except Exception:
+            t = ''
+        chunks.append(t)
+        n += len(t)
+        if n > max_chars:
+            break
+    return '\n\n'.join(chunks).strip() or '(Metin çıkarılamadı; dosya taranmış PDF olabilir.)'
+
+
+def pdf_bytes_split_to_zip_entries(pdf_bytes: bytes) -> list[tuple[str, bytes]]:
+    """
+    Her PDF sayfasını ayrı tek sayfalık PDF olarak döndürür (sıra korunur).
+    Görsellere rasterleme yok; kullanıcı sayfa başına PDF alır.
+    """
+    if not pdf_bytes or not _validate_pdf_magic(pdf_bytes):
+        raise ValueError('invalid_pdf')
+    from pypdf import PdfReader, PdfWriter
+
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    n = len(reader.pages)
+    if n > MAX_EXPORT_PDF_PAGES:
+        raise ValueError('too_many_pages')
+    out: list[tuple[str, bytes]] = []
+    for i, page in enumerate(reader.pages, start=1):
+        w = PdfWriter()
+        w.add_page(page)
+        buf = io.BytesIO()
+        w.write(buf)
+        name = f'page_{i:03d}.pdf'
+        out.append((name, buf.getvalue()))
+    return out
+
+
+def build_zip_bytes(entries: list[tuple[str, bytes]]) -> bytes:
+    """Dosya adı + içerik listesinden ZIP üretir."""
+    import zipfile
+
+    if not entries:
+        raise ValueError('empty_zip_entries')
+    total = sum(len(b) for _, b in entries)
+    if total > MAX_EXPORT_TOTAL_BYTES:
+        raise ValueError('total_size_limit')
+    buf = io.BytesIO()
+    seen: set[str] = set()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for name, data in entries:
+            safe = name.replace('..', '_').replace('/', '_')[:180] or 'file.bin'
+            base = safe
+            i = 0
+            while safe in seen:
+                i += 1
+                stem = base.rsplit('.', 1)
+                safe = f'{stem[0]}_{i}.{stem[1]}' if len(stem) == 2 else f'{base}_{i}'
+            seen.add(safe)
+            zf.writestr(safe, data)
+    return buf.getvalue()
 
 
 def fetch_image_bytes(url: str, timeout: int = 30) -> tuple[bytes, str]:

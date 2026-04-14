@@ -361,7 +361,7 @@
 									? file.url
 									: `${WEBUI_API_BASE_URL}/files/${file.url}${file?.content_type ? '/content' : ''}`}
 							<div>
-								{#if file.type === 'image' || (file?.content_type ?? '').startsWith('image/')}
+								{#if file.type !== 'file' && (file.type === 'image' || (file?.content_type ?? '').startsWith('image/'))}
 									<Image src={fileUrl} alt={file.name} imageClassName=" max-h-96 rounded-lg" />
 								{:else if file.type === 'video' || (file?.content_type ?? '').startsWith('video/')}
 									<video src={fileUrl} controls class=" max-h-96 rounded-lg"></video>
