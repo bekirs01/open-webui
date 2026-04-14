@@ -1,6 +1,7 @@
 import type { Model } from '$lib/stores';
 
 import type { AgentWorkflowV1 } from './types';
+import { readAgentModelIdFromPayload } from './serialization';
 import { isLikelyImageOnlyModel, pickDefaultWorkflowAiModelId } from './workflowAiModelPick';
 
 function caps(m: Model | undefined): Record<string, boolean | undefined> | undefined {
@@ -45,7 +46,7 @@ export function resolveAgentModelsInWorkflow(
 			return n;
 		}
 		const mode = String(n.mode || 'text').toLowerCase() === 'image' ? 'image' : 'text';
-		const cur = (n.modelId || '').trim();
+		const cur = readAgentModelIdFromPayload(n);
 		const found = models.find((m) => m.id === cur);
 		const inList = Boolean(found);
 
@@ -60,10 +61,24 @@ export function resolveAgentModelsInWorkflow(
 			}
 		}
 
+		const fb = String(fallbackId ?? '').trim();
+		let idOut = String(modelId ?? '').trim();
+		if (!idOut) {
+			if (mode === 'image') {
+				idOut =
+					String(imageFallback ?? '').trim() ||
+					String(textFallback ?? '').trim() ||
+					fb ||
+					'default';
+			} else {
+				idOut = String(textFallback ?? '').trim() || fb || 'default';
+			}
+		}
+
 		return {
 			...n,
 			mode: mode as 'text' | 'image',
-			modelId
+			modelId: idOut
 		};
 	});
 

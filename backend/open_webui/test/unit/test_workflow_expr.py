@@ -44,3 +44,34 @@ def test_input_length():
 def test_item_index_in_template():
     ctx = ExprContext({"x": 1}, 2, [{}])
     assert substitute_template("ix={{ $itemIndex }}", ctx) == "ix=2"
+
+
+def test_preprocess_node_bracket():
+    assert (
+        preprocess_expression('$node["Trigger"].json.userInput') == "__node['Trigger'].json.userInput"
+    )
+
+
+def test_eval_node_ref_json():
+    ctx = ExprContext(
+        {'x': 1},
+        0,
+        [{}],
+        node={
+            'Trigger': {
+                'json': {'userInput': 'hello'},
+                'items': [{'json': {'userInput': 'hello'}}],
+            }
+        },
+    )
+    assert evaluate_expression('={{$node["Trigger"].json.userInput}}', ctx) == 'hello'
+
+
+def test_substitute_node_template():
+    ctx = ExprContext(
+        {},
+        0,
+        [],
+        node={'A': {'json': {'n': 2}, 'items': [{'json': {'n': 2}}]}},
+    )
+    assert substitute_template('v={{$node["A"].json.n}}', ctx) == 'v=2'

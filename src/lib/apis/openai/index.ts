@@ -1,5 +1,45 @@
 import { OPENAI_API_BASE_URL, WEBUI_API_BASE_URL, WEBUI_BASE_URL } from '$lib/constants';
 
+/** Turn FastAPI / OpenAI error JSON into a single readable string (avoids "[object Object]" in toasts). */
+export function formatApiErrorBody(err: unknown): string {
+	if (err == null) return 'Unknown error';
+	if (typeof err === 'string') return err;
+	if (err instanceof Error) return err.message;
+	if (typeof err !== 'object') return String(err);
+	const o = err as Record<string, unknown>;
+	if ('message' in o && typeof o.message === 'string' && o.message) return o.message;
+	if ('detail' in o) {
+		const d = o.detail;
+		if (typeof d === 'string') return d;
+		if (Array.isArray(d)) {
+			return d
+				.map((item) => {
+					if (item && typeof item === 'object' && 'msg' in item) {
+						return String((item as { msg: unknown }).msg);
+					}
+					try {
+						return JSON.stringify(item);
+					} catch {
+						return String(item);
+					}
+				})
+				.join('; ');
+		}
+		if (d != null && typeof d === 'object') {
+			try {
+				return JSON.stringify(d);
+			} catch {
+				return String(d);
+			}
+		}
+	}
+	try {
+		return JSON.stringify(err);
+	} catch {
+		return String(err);
+	}
+}
+
 export const getOpenAIConfig = async (token: string = '') => {
 	let error = null;
 
@@ -390,12 +430,12 @@ export const generateOpenAIChatCompletion = async (
 			return res.json();
 		})
 		.catch((err) => {
-			error = err?.detail ?? err;
+			error = formatApiErrorBody(err);
 			return null;
 		});
 
 	if (error) {
-		throw error;
+		throw new Error(error);
 	}
 
 	return res;

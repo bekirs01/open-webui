@@ -478,9 +478,12 @@ def upload_image(request, image_data, content_type, metadata, user, db=None):
         url = str(request.app.url_path_for('get_file_content_by_id', id=file_item.id))
         # Link file to chat (SQL) AND mirror into chat JSON `messages[id].files` so reload/export
         # can resolve the last generated image (extract_last_artifact_for_export / follow-up "pdf yap").
+        # MWS presentation pipeline reuses image_generations for slide assets; those must NOT appear
+        # as standalone chat images — only the final PPTX should attach to the message.
         chat_id = metadata.get('chat_id')
         message_id = metadata.get('message_id')
-        if chat_id and message_id:
+        skip_chat_attach = bool(metadata.get('mws_skip_message_image_attach'))
+        if chat_id and message_id and not skip_chat_attach:
             try:
                 Chats.insert_chat_files(
                     chat_id=chat_id,

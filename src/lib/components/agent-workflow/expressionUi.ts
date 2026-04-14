@@ -20,6 +20,13 @@ export function templateJsonField(field: string): string {
 	return f ? `{{$json.${f}}}` : '';
 }
 
+/** Node-scoped path: matches backend `$node[key].json.path` (key JSON-string-escaped). */
+export function templateNodeJsonField(nodeKey: string, dottedPath: string): string {
+	const path = sanitizeJsonFieldPath(dottedPath);
+	if (!path) return '';
+	return `{{$node[${JSON.stringify(nodeKey)}].json.${path}}}`;
+}
+
 export function formulaJsonField(field: string): string {
 	const f = sanitizeJsonFieldPath(field);
 	return f ? `={{$json.${f}}}` : '';

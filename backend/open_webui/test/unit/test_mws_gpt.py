@@ -30,6 +30,7 @@ from open_webui.utils.mws_gpt.team_registry import (
 from open_webui.utils.mws_gpt.auto_workflow import build_auto_workflow
 from open_webui.utils.mws_gpt.orchestrator import estimate_complexity
 from open_webui.utils.mws_gpt.export_intent import parse_export_intent, export_intent_blocks_web_search
+from open_webui.utils.mws_gpt.presentation_intent import resolve_presentation_intent
 import open_webui.utils.mws_gpt.active as active_mod
 
 
@@ -503,3 +504,13 @@ def test_extract_file_id_from_relative_api_path():
     uid = '768b6e57-0866-4800-b3cc-51310806a6ae'
     assert extract_file_id(f'/api/v1/files/{uid}/content') == uid
     assert extract_file_id(f'https://localhost:8080/api/v1/files/{uid}/content') == uid
+
+
+def test_presentation_intent_russian_short_deck():
+    """Regression: adjective between verb and «презентация» must match."""
+    assert resolve_presentation_intent('создай короткую презентацию про кошек') is True
+    assert resolve_presentation_intent('Сделай презентацию про автомобили, 5 слайдов') is True
+
+
+def test_presentation_intent_not_definition():
+    assert resolve_presentation_intent('что такое презентация') is False

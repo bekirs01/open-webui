@@ -225,6 +225,7 @@ async def try_mws_export_conversion(
                                 'type': 'image'
                                 if (content_type or '').startswith('image/')
                                 else 'file',
+                                'id': file_item.id,
                                 'url': url,
                                 'name': filename,
                                 'content_type': content_type,

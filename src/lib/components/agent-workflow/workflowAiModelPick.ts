@@ -19,9 +19,14 @@ function scoreModelForWorkflowDraft(m: Model): number {
 		s -= 200;
 	}
 	const id = (m.id || '').toLowerCase();
+	const name = `${m.name ?? ''}`.toLowerCase();
 	// Prefer general instruction-following chat models for structured JSON.
 	if (/gpt-4|gpt-4\.|gpt-5|o3|o1|claude|gemini|llama-3|llama3|qwen2|qwen3|mistral|mixtral|deepseek|command-r|phi-3|phi3/i.test(id)) {
 		s += 40;
+	}
+	// Instruct / chat variants are better at following workflow JSON specs.
+	if (/instruct|chat|it\b|turbo/i.test(id) || /instruct|chat/i.test(name)) {
+		s += 25;
 	}
 	if (m.owned_by === 'openai' && !isLikelyImageOnlyModel(m)) {
 		s += 15;
@@ -43,7 +48,11 @@ export function pickDefaultWorkflowAiModelId(models: Model[] | undefined | null)
 	}
 	const ranked = [...list]
 		.map((m) => ({ m, score: scoreModelForWorkflowDraft(m) }))
-		.sort((a, b) => b.score - a.score);
+		.sort((a, b) => {
+			const d = b.score - a.score;
+			if (d !== 0) return d;
+			return (a.m.id || '').localeCompare(b.m.id || '');
+		});
 	const best = ranked[0];
 	if (best.score > -100) {
 		return best.m.id;

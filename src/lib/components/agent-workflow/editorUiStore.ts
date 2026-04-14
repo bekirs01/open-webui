@@ -1,7 +1,23 @@
 import { writable } from 'svelte/store';
 
-/** Canvas highlight during run replay (node id). */
+/** @deprecated Replay highlight — prefer runActiveNodeId + runPathNodeIds */
 export const runStepHighlightId = writable<string | null>(null);
+
+/** Currently executing node (live run / stream). */
+export const runActiveNodeId = writable<string | null>(null);
+
+/** Nodes on the taken path after run completes (persistent until next run). */
+export const runPathNodeIds = writable<Set<string>>(new Set());
+
+/** Edges on the taken path (consecutive pairs in execution order). */
+export const runPathEdgeIds = writable<Set<string>>(new Set());
+
+export function clearRunVisualization() {
+	runStepHighlightId.set(null);
+	runActiveNodeId.set(null);
+	runPathNodeIds.set(new Set());
+	runPathEdgeIds.set(new Set());
+}
 
 export type ContextMenuTarget =
 	| { kind: 'node'; id: string; x: number; y: number }
@@ -42,4 +58,15 @@ export function closeNodePicker() {
 	pendingFlowPosition.set(null);
 	pendingConnection.set(null);
 	pendingSplitEdgeId.set(null);
+}
+
+/** Block settings modal (Input / Parameters / Output) — opened by double-click or context menu, not on single select. */
+export const nodeInspectorModalId = writable<string | null>(null);
+
+export function openNodeInspector(nodeId: string) {
+	nodeInspectorModalId.set(nodeId);
+}
+
+export function closeNodeInspector() {
+	nodeInspectorModalId.set(null);
 }

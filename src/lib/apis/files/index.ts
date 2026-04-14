@@ -304,31 +304,31 @@ export const updateFileDataContentById = async (token: string, id: string, conte
 };
 
 export const getFileContentById = async (id: string) => {
-	let error = null;
-
+	/** Binary Office / previews must not ask for JSON — some stacks mishandle Accept. */
 	const res = await fetch(`${WEBUI_API_BASE_URL}/files/${id}/content`, {
 		method: 'GET',
 		headers: {
-			Accept: 'application/json'
+			Accept: '*/*'
 		},
 		credentials: 'include'
-	})
-		.then(async (res) => {
-			if (!res.ok) throw await res.json();
-			return await res.arrayBuffer();
-		})
-		.catch((err) => {
-			error = err.detail;
-			console.error(err);
+	});
 
-			return null;
-		});
-
-	if (error) {
-		throw error;
+	if (!res.ok) {
+		let detail: unknown = res.statusText;
+		try {
+			detail = await res.json();
+		} catch {
+			// body not JSON
+		}
+		console.error('getFileContentById failed', res.status, detail);
+		throw detail;
 	}
 
-	return res;
+	const buf = await res.arrayBuffer();
+	if (!buf || buf.byteLength < 1) {
+		throw new Error('Empty file content');
+	}
+	return buf;
 };
 
 export const deleteFileById = async (token: string, id: string) => {

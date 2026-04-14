@@ -15,6 +15,23 @@
 
 	const i18n = getContext('i18n');
 
+	/**
+	 * Chat file chips may omit `id` and only include `url` (e.g. `/api/v1/files/<uuid>/content`).
+	 * Preview/download APIs require the file UUID.
+	 */
+	const getFileRecordId = (it: typeof item): string | null => {
+		if (!it) return null;
+		if (it.id && typeof it.id === 'string') return it.id;
+		const u = it.url;
+		if (typeof u !== 'string' || !u) return null;
+		const m = u.match(/\/files\/([0-9a-f-]{36})(?:\/content)?(?:\?|$)/i);
+		if (m) return m[1];
+		if (/^[0-9a-f-]{36}$/i.test(u.trim())) return u.trim();
+		return null;
+	};
+
+	$: fileRecordId = item ? getFileRecordId(item) : null;
+
 	const CONTENT_PREVIEW_LIMIT = 10000;
 	let expandedContent = false;
 
@@ -152,8 +169,10 @@
 	const loadExcelContent = async () => {
 		try {
 			excelError = '';
+			const fid = getFileRecordId(item);
+			if (!fid) throw new Error('Missing file id');
 			const [arrayBuffer, { read }] = await Promise.all([
-				getFileContentById(item.id),
+				getFileContentById(fid),
 				import('xlsx')
 			]);
 			excelWorkbook = read(arrayBuffer, { type: 'array' });
@@ -185,8 +204,10 @@
 	const loadDocxContent = async () => {
 		try {
 			docxError = '';
+			const fid = getFileRecordId(item);
+			if (!fid) throw new Error('Missing file id');
 			const [arrayBuffer, mammoth] = await Promise.all([
-				getFileContentById(item.id),
+				getFileContentById(fid),
 				import('mammoth')
 			]);
 			const result = await mammoth.convertToHtml({ arrayBuffer });
@@ -200,8 +221,10 @@
 	const loadPptxContent = async () => {
 		try {
 			pptxError = '';
+			const fid = getFileRecordId(item);
+			if (!fid) throw new Error('Missing file id');
 			const [arrayBuffer, { pptxToImages }] = await Promise.all([
-				getFileContentById(item.id),
+				getFileContentById(fid),
 				import('$lib/utils/pptxToHtml')
 			]);
 			const result = await pptxToImages(arrayBuffer);
@@ -231,7 +254,14 @@
 		} else if (item?.type === 'file') {
 			loading = true;
 
-			const file = await getFileById(localStorage.token, item.id).catch((e) => {
+			const recordId = getFileRecordId(item);
+			if (!recordId) {
+				console.error('File item has no id and no parsable url:', item);
+				loading = false;
+				return;
+			}
+
+			const file = await getFileById(localStorage.token, recordId).catch((e) => {
 				console.error('Error fetching file:', e);
 				return null;
 			});
@@ -447,7 +477,7 @@
 						</div>
 						<div use:initImagePanzoom>
 							<img
-								src={`${WEBUI_API_BASE_URL}/files/${item.id}/content`}
+								src={`${WEBUI_API_BASE_URL}/files/${fileRecordId}/content`}
 								alt={item?.name ?? 'Image'}
 								class="w-full object-contain rounded-lg"
 								loading="lazy"
@@ -521,17 +551,17 @@
 							</div>
 						{/if}
 					{/if}
-				{:else if selectedTab === 'preview'}
+					{:else if selectedTab === 'preview'}
 					{#if isAudio}
 						<audio
-							src={`${WEBUI_API_BASE_URL}/files/${item.id}/content`}
+							src={`${WEBUI_API_BASE_URL}/files/${fileRecordId}/content`}
 							class="w-full border-0 rounded-lg mb-2"
 							controls
 							playsinline
 						/>
 					{:else if isPDF}
 						<PDFViewer
-							url={`${WEBUI_API_BASE_URL}/files/${item.id}/content`}
+							url={`${WEBUI_API_BASE_URL}/files/${fileRecordId}/content`}
 							className="w-full h-[70vh] border-0 rounded-lg"
 						/>
 					{:else if isExcel}

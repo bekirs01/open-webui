@@ -145,6 +145,10 @@ def wire_display_text(wire: dict[str, Any]) -> str:
                     return err[:8000]
                 sc = j.get('statusCode')
                 return str(sc) if sc is not None else ''
+            if j.get('type') == 'telegram_result':
+                if not j.get('ok') and isinstance(j.get('error'), str):
+                    return str(j.get('error') or '')[:8000]
+                return f"telegram ok message_id={j.get('messageId')}"[:8000]
             if j.get('type') == 'workflow_error':
                 return str(j.get('message') or '')[:8000]
             try:
@@ -352,6 +356,28 @@ def wrap_http_result(
         }
     preview = (body or '')[:12000] if body else (error or '')[:12000]
     return make_wire([{'json': obj}], text=preview or str(status_code or ''))
+
+
+def wrap_telegram_result(
+    *,
+    ok: bool,
+    error: Optional[str] = None,
+    message_id: Optional[int] = None,
+    chat_id: Optional[str] = None,
+    raw: Optional[dict[str, Any]] = None,
+) -> str:
+    """Telegram sendMessage node output (items[0].json.type == telegram_result)."""
+    obj: dict[str, Any] = {'type': 'telegram_result', 'ok': bool(ok)}
+    if error:
+        obj['error'] = (error or '')[:4000]
+    if message_id is not None:
+        obj['messageId'] = int(message_id)
+    if chat_id is not None:
+        obj['chatId'] = str(chat_id)[:128]
+    if raw is not None and isinstance(raw, dict):
+        obj['response'] = raw
+    preview = (error or '')[:12000] if not ok else f'message_id={message_id}' if message_id is not None else 'ok'
+    return make_wire([{'json': obj}], text=preview[:12000])
 
 
 def branch_from_if_output(result_str: str) -> bool:

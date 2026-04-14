@@ -14,6 +14,7 @@ function nodeFlowType(n: Node | undefined): FlowNodeTypeId {
 		t === 'ifElse' ||
 		t === 'transform' ||
 		t === 'httpRequest' ||
+		t === 'telegram' ||
 		t === 'merge' ||
 		t === 'group'
 	)

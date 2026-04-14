@@ -3,6 +3,8 @@
 	import { getSmoothStepPath, type SmoothStepPathOptions } from '@xyflow/system';
 	import { getContext } from 'svelte';
 
+	import { runPathEdgeIds } from './editorUiStore';
+
 	export let id: string;
 	export let sourceX: number;
 	export let sourceY: number;
@@ -31,6 +33,7 @@
 	export let targetHandleId: string | null | undefined = undefined;
 
 	$: edgeDisabled = Boolean(data?.disabled);
+	$: onRunPath = $runPathEdgeIds.has(id);
 
 	const onInsert = getContext<((edgeId: string) => void) | undefined>('workflowEdgeInsert');
 
@@ -62,6 +65,7 @@
 	{interactionWidth}
 	style={[
 		edgeDisabled ? 'opacity:0.35;stroke-dasharray:6 4' : '',
+		onRunPath ? 'stroke:#d97706;stroke-width:2.5' : '',
 		style ?? ''
 	]
 		.filter(Boolean)

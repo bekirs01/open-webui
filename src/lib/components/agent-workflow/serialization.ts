@@ -1,4 +1,6 @@
 import type { Node } from '@xyflow/svelte';
+
+import { coerceWorkflowNodeType } from './workflowNodeTypeCoercion';
 import type {
 	AgentWorkflowEdgeV1,
 	AgentWorkflowNodeV1,
@@ -9,6 +11,7 @@ import type {
 export function flowTypeToKind(t: string): WorkflowNodeKind {
 	if (t === 'ifElse') return 'if_else';
 	if (t === 'httpRequest') return 'http_request';
+	if (t === 'telegram') return 'telegram';
 	if (t === 'merge') return 'merge';
 	if (t === 'group') return 'group';
 	if (t === 'trigger' || t === 'transform') return t;
@@ -17,9 +20,18 @@ export function flowTypeToKind(t: string): WorkflowNodeKind {
 
 export function kindToFlowType(
 	k: WorkflowNodeKind
-): 'trigger' | 'agent' | 'ifElse' | 'transform' | 'httpRequest' | 'merge' | 'group' {
+):
+	| 'trigger'
+	| 'agent'
+	| 'ifElse'
+	| 'transform'
+	| 'httpRequest'
+	| 'telegram'
+	| 'merge'
+	| 'group' {
 	if (k === 'if_else') return 'ifElse';
 	if (k === 'http_request') return 'httpRequest';
+	if (k === 'telegram') return 'telegram';
 	if (k === 'merge') return 'merge';
 	if (k === 'group') return 'group';
 	if (k === 'trigger' || k === 'transform' || k === 'agent') return k;
@@ -125,6 +137,32 @@ export function flowNodeToJson(n: Node): AgentWorkflowNodeV1 {
 			)
 		};
 	}
+	if (kind === 'telegram') {
+		const d = n.data as {
+			credentialMode?: string;
+			botToken?: string;
+			botTokenEnv?: string;
+			chatId?: string;
+			messageText?: string;
+			parseMode?: string;
+		};
+		return {
+			...base,
+			task: '',
+			agentId: n.id,
+			config: mergeCfg(
+				{
+					credentialMode: d.credentialMode === 'inline' ? 'inline' : 'env',
+					botToken: d.botToken ?? '',
+					botTokenEnv: d.botTokenEnv ?? 'TELEGRAM_BOT_TOKEN',
+					chatId: d.chatId ?? '',
+					messageText: d.messageText ?? '{{input}}',
+					parseMode: d.parseMode ?? ''
+				},
+				disabled
+			)
+		};
+	}
 	if (kind === 'merge') {
 		const d = n.data as { separator?: string };
 		return {
@@ -178,9 +216,35 @@ export function flowNodeToJson(n: Node): AgentWorkflowNodeV1 {
 	};
 }
 
+/** LLM/import JSON may omit `position`; XYFlow crashes on `position.x` if undefined. */
+export function ensureWorkflowNodePosition(
+	pos: { x?: number; y?: number } | null | undefined
+): { x: number; y: number } {
+	const x = pos && typeof pos.x === 'number' && Number.isFinite(pos.x) ? pos.x : 0;
+	const y = pos && typeof pos.y === 'number' && Number.isFinite(pos.y) ? pos.y : 0;
+	return { x, y };
+}
+
+/** Patch LLM JSON often uses ModelId / model_id instead of modelId. */
+export function readAgentModelIdFromPayload(n: AgentWorkflowNodeV1): string {
+	const r = n as Record<string, unknown>;
+	for (const key of ['modelId', 'ModelId', 'model_id'] as const) {
+		const v = r[key];
+		if (typeof v === 'string' && v.trim()) return v.trim();
+	}
+	return '';
+}
+
+function readLlmModelIdAliases(n: AgentWorkflowNodeV1, rest: Record<string, unknown>): string {
+	const fromRest = readAgentModelIdFromPayload(rest as unknown as AgentWorkflowNodeV1);
+	if (fromRest) return fromRest;
+	return readAgentModelIdFromPayload(n);
+}
+
 export function jsonToFlowNode(n: AgentWorkflowNodeV1, defaultModelId: string): Node {
 	const ft = kindToFlowType(n.nodeType ?? 'agent');
 	const cfgDisabled = Boolean((n.config as { disabled?: boolean } | undefined)?.disabled);
+	const pos = ensureWorkflowNodePosition(n.position);
 
 	if (ft === 'trigger') {
 		const label = String((n.config?.label as string) ?? '');
@@ -188,7 +252,7 @@ export function jsonToFlowNode(n: AgentWorkflowNodeV1, defaultModelId: string): 
 		return {
 			id: n.id,
 			type: 'trigger',
-			position: n.position,
+			position: pos,
 			data: {
 				label,
 				triggerMode: triggerMode as 'manual' | 'schedule' | 'webhook',
@@ -217,7 +281,7 @@ export function jsonToFlowNode(n: AgentWorkflowNodeV1, defaultModelId: string): 
 		return {
 			id: n.id,
 			type: 'ifElse',
-			position: n.position,
+			position: pos,
 			data: {
 				condition: String(c?.condition ?? ''),
 				conditionMode,
@@ -234,7 +298,7 @@ export function jsonToFlowNode(n: AgentWorkflowNodeV1, defaultModelId: string): 
 		return {
 			id: n.id,
 			type: 'transform',
-			position: n.position,
+			position: pos,
 			data: { template, ...(cfgDisabled ? { disabled: true } : {}) }
 		};
 	}
@@ -251,7 +315,7 @@ export function jsonToFlowNode(n: AgentWorkflowNodeV1, defaultModelId: string): 
 		return {
 			id: n.id,
 			type: 'httpRequest',
-			position: n.position,
+			position: pos,
 			data: {
 				method: String(c?.method || 'GET').toUpperCase(),
 				url: String(c?.url ?? 'https://'),
@@ -263,12 +327,36 @@ export function jsonToFlowNode(n: AgentWorkflowNodeV1, defaultModelId: string): 
 			}
 		};
 	}
+	if (ft === 'telegram') {
+		const c = n.config as {
+			credentialMode?: string;
+			botToken?: string;
+			botTokenEnv?: string;
+			chatId?: string;
+			messageText?: string;
+			parseMode?: string;
+		};
+		return {
+			id: n.id,
+			type: 'telegram',
+			position: pos,
+			data: {
+				credentialMode: c?.credentialMode === 'inline' ? 'inline' : 'env',
+				botToken: String(c?.botToken ?? ''),
+				botTokenEnv: String(c?.botTokenEnv ?? 'TELEGRAM_BOT_TOKEN'),
+				chatId: String(c?.chatId ?? ''),
+				messageText: String(c?.messageText ?? '{{input}}'),
+				parseMode: String(c?.parseMode ?? ''),
+				...(cfgDisabled ? { disabled: true } : {})
+			}
+		};
+	}
 	if (ft === 'merge') {
 		const separator = String((n.config?.separator as string) ?? '\n---\n');
 		return {
 			id: n.id,
 			type: 'merge',
-			position: n.position,
+			position: pos,
 			data: { separator, ...(cfgDisabled ? { disabled: true } : {}) }
 		};
 	}
@@ -279,7 +367,7 @@ export function jsonToFlowNode(n: AgentWorkflowNodeV1, defaultModelId: string): 
 		return {
 			id: n.id,
 			type: 'group',
-			position: n.position,
+			position: pos,
 			data: { title, width, height, ...(cfgDisabled ? { disabled: true } : {}) },
 			style: `width: ${width}px; height: ${height}px;`,
 			class: 'agent-workflow-group-node',
@@ -290,7 +378,7 @@ export function jsonToFlowNode(n: AgentWorkflowNodeV1, defaultModelId: string): 
 	return {
 		id: n.id,
 		type: 'agent',
-		position: n.position,
+		position: pos,
 		data: {
 			agentName: n.agentName ?? '',
 			modelId: (n.modelId || '').trim() || defaultModelId,
@@ -303,28 +391,55 @@ export function jsonToFlowNode(n: AgentWorkflowNodeV1, defaultModelId: string): 
 	};
 }
 
+function newWorkflowEdgeId(): string {
+	if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+		return `e-${crypto.randomUUID()}`;
+	}
+	return `e-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+}
+
+/**
+ * LLM / repair may emit edges without `id` or reuse ids — XYFlow {#each} keys must be unique non-empty strings.
+ */
+export function ensureWorkflowEdgeIds(wf: AgentWorkflowV1): AgentWorkflowV1 {
+	const seen = new Set<string>();
+	const edges = (wf.edges ?? []).map((e) => {
+		let id = typeof e.id === 'string' ? e.id.trim() : '';
+		if (!id || seen.has(id)) {
+			do {
+				id = newWorkflowEdgeId();
+			} while (seen.has(id));
+		}
+		seen.add(id);
+		return { ...e, id };
+	});
+	return { ...wf, edges };
+}
+
 export function normalizeWorkflowForLoad(
 	wf: AgentWorkflowV1,
 	defaultModel: string
 ): AgentWorkflowV1 {
-	return {
+	const base: AgentWorkflowV1 = {
 		...wf,
 		version: wf.version === 2 ? 2 : 1,
 		nodes: wf.nodes.map((n) => {
-			const nt = (n as { nodeType?: WorkflowNodeKind }).nodeType ?? 'agent';
 			const { agentGroup: _legacyGroup, ...rest } = n as AgentWorkflowNodeV1 & {
 				agentGroup?: unknown;
 			};
+			const nt = coerceWorkflowNodeType(rest as unknown as Record<string, unknown>, n.id);
+			const agentMid = readLlmModelIdAliases(n, rest as Record<string, unknown>);
 			return {
 				...rest,
 				nodeType: nt,
 				agentId: n.id,
-				modelId:
-					nt === 'agent' ? ((n.modelId || '').trim() || defaultModel) : (n.modelId ?? ''),
-				agentName: n.agentName ?? ''
+				modelId: nt === 'agent' ? agentMid || defaultModel : (n.modelId ?? ''),
+				agentName: n.agentName ?? '',
+				position: ensureWorkflowNodePosition((rest as AgentWorkflowNodeV1).position)
 			};
 		})
 	};
+	return ensureWorkflowEdgeIds(base);
 }
 
 function edgeWhen(e: import('@xyflow/svelte').Edge): AgentWorkflowEdgeV1['when'] {

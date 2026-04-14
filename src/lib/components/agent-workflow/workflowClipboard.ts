@@ -3,6 +3,7 @@ import { addEdge } from '@xyflow/svelte';
 import type { Edge, Node } from '@xyflow/svelte';
 import { edges, nodes } from './workflowStore';
 import { pushUndoSnapshot } from './workflowHistory';
+import { ensureWorkflowNodePosition } from './serialization';
 
 export type ClipboardPayload = {
 	nodes: Node[];
@@ -39,8 +40,9 @@ export function pasteClipboardAt(flowPos: { x: number; y: number }): boolean {
 	let minX = Infinity;
 	let minY = Infinity;
 	for (const n of clipboard.nodes) {
-		minX = Math.min(minX, n.position.x);
-		minY = Math.min(minY, n.position.y);
+		const p = ensureWorkflowNodePosition(n.position);
+		minX = Math.min(minX, p.x);
+		minY = Math.min(minY, p.y);
 	}
 	const dx = flowPos.x - minX;
 	const dy = flowPos.y - minY;
@@ -48,10 +50,11 @@ export function pasteClipboardAt(flowPos: { x: number; y: number }): boolean {
 	const newNodes: Node[] = clipboard.nodes.map((n) => {
 		const raw = JSON.parse(JSON.stringify(n)) as Node;
 		const nid = idMap.get(n.id)!;
+		const rp = ensureWorkflowNodePosition(raw.position);
 		return {
 			...raw,
 			id: nid,
-			position: { x: raw.position.x + dx, y: raw.position.y + dy },
+			position: { x: rp.x + dx, y: rp.y + dy },
 			selected: false,
 			dragging: false
 		};
@@ -102,10 +105,11 @@ export function duplicateNodesByIds(nodeIds: string[]): boolean {
 	const newNodes: Node[] = selected.map((n) => {
 		const raw = JSON.parse(JSON.stringify(n)) as Node;
 		const nid = idMap.get(n.id)!;
+		const rp = ensureWorkflowNodePosition(raw.position);
 		return {
 			...raw,
 			id: nid,
-			position: { x: raw.position.x + offset.x, y: raw.position.y + offset.y },
+			position: { x: rp.x + offset.x, y: rp.y + offset.y },
 			selected: true,
 			dragging: false
 		};

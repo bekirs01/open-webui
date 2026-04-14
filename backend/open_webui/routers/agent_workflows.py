@@ -7,11 +7,12 @@ import copy
 import json
 import logging
 import time
-from collections import defaultdict, deque
-from typing import Any, Optional
+from collections import Counter, defaultdict, deque
+from typing import Any, Awaitable, Callable, Optional
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from starlette.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from open_webui.models.users import UserModel
@@ -24,6 +25,7 @@ from open_webui.workflow_expr import (
     wire_items_to_json_list,
 )
 from open_webui.workflow_ssrf import validate_public_http_url
+from open_webui.workflow_integrations import run_telegram_node
 from open_webui.workflow_wire import (
     branch_from_if_output,
     eval_if_json_compare,
@@ -364,6 +366,11 @@ def _terminal_wire_to_markdown(last_raw: str) -> str:
                 return f'{head}\n\n```\n{err}\n```'
             preview = (b or '')[:12000]
             return f'{head}\n\n```\n{preview}\n```'
+        if isinstance(j0, dict) and j0.get('type') == 'telegram_result':
+            if j0.get('ok'):
+                mid = j0.get('messageId')
+                return f'**Telegram** sent (message_id={mid})'
+            return f"**Telegram** error\n\n```\n{j0.get('error') or 'failed'}\n```"
     except Exception:
         pass
     return final_text
@@ -388,18 +395,79 @@ def _normalize_wire_item_entry(it: Any) -> dict[str, Any]:
     return {'json': {}}
 
 
+def _workflow_node_expression_base_label(node: WorkflowNode) -> str:
+    """Human-readable name for $node[\"…\"] (matches frontend workflowNodeKeys)."""
+    cfg = node.config or {}
+    nt = (node.nodeType or 'agent').lower()
+    if nt == 'agent':
+        return (node.agentName or '').strip() or (str(cfg.get('agentName') or '')).strip() or 'Agent'
+    if nt == 'trigger':
+        return (str(cfg.get('label') or '')).strip() or 'Trigger'
+    if nt == 'if_else':
+        return 'IF / ELSE'
+    if nt == 'transform':
+        return 'Transform'
+    if nt == 'http_request':
+        return 'HTTP Request'
+    if nt == 'telegram':
+        return 'Telegram'
+    if nt == 'merge':
+        return 'Merge'
+    if nt == 'group':
+        return (str(cfg.get('title') or '')).strip() or 'Group'
+    return (node.nodeType or 'node').strip() or 'Node'
+
+
+def _workflow_nodes_to_expression_keys(nodes: list[WorkflowNode]) -> dict[str, str]:
+    """Stable unique keys: duplicate base labels get \" (id[:8])\" suffix."""
+    bases = [_workflow_node_expression_base_label(n) for n in nodes]
+    cnt = Counter(bases)
+    out: dict[str, str] = {}
+    for n, b in zip(nodes, bases):
+        if cnt[b] > 1:
+            out[n.id] = f'{b} ({n.id[:8]})'
+        else:
+            out[n.id] = b
+    return out
+
+
+def _build_expr_node_map(
+    results: dict[str, str],
+    id_to_key: dict[str, str],
+) -> dict[str, dict[str, Any]]:
+    """
+    Keys match $node[\"…\"] strings. Each value exposes .json / .items like n8n.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    for nid, wire_raw in results.items():
+        key = id_to_key.get(nid)
+        if not key:
+            continue
+        w = parse_wire(wire_raw)
+        items = list(w.get('items') or [])
+        j0: dict[str, Any] = {}
+        if items and isinstance(items[0], dict):
+            raw_j = items[0].get('json')
+            if isinstance(raw_j, dict):
+                j0 = copy.deepcopy(raw_j)
+        items_copy = copy.deepcopy(items)
+        out[key] = {'json': j0, 'items': items_copy}
+    return out
+
+
 def _eval_if_on_single_item(
     norm: dict[str, Any],
     cfg: dict[str, Any],
     *,
     batch_json_list: list[dict[str, Any]],
     item_index: int,
+    expr_node_map: Optional[dict[str, Any]] = None,
 ) -> bool:
     """Evaluate IF for one wire row: expression (preferred) or legacy json/substring."""
     expr = str(cfg.get('conditionExpression') or cfg.get('expression') or '').strip()
     if expr:
         j = norm.get('json') if isinstance(norm.get('json'), dict) else {}
-        ctx = ExprContext(json=j, item_index=item_index, input=batch_json_list)
+        ctx = ExprContext(json=j, item_index=item_index, input=batch_json_list, node=expr_node_map)
         return bool(evaluate_expression(expr, ctx))
 
     mode = str(cfg.get('conditionMode') or 'substring').strip().lower()
@@ -420,13 +488,72 @@ async def run_workflow(
     body: RunBody,
     user: UserModel = Depends(get_verified_user),
 ):
+    """
+    Default: JSON result. With query `stream=1` (or true/yes), returns SSE (`text/event-stream`)
+    with node_begin/node_end and a final `complete` event — same path avoids proxies that 405 on `/run/stream`.
+    """
     _ = user
+    want_stream = request.query_params.get('stream', '').lower() in ('1', 'true', 'yes')
+    if not want_stream:
+        return await _run_workflow_with_progress(request, body, progress_emit=None)
+
+    q: asyncio.Queue[Optional[dict[str, Any]]] = asyncio.Queue()
+
+    async def progress_emit(ev: dict[str, Any]) -> None:
+        await q.put(ev)
+
+    async def runner() -> None:
+        try:
+            result = await _run_workflow_with_progress(request, body, progress_emit=progress_emit)
+            await q.put({'type': 'complete', 'payload': result})
+        except HTTPException as e:
+            await q.put(
+                {
+                    'type': 'error',
+                    'detail': str(e.detail) if e.detail is not None else str(e),
+                    'statusCode': e.status_code,
+                }
+            )
+        except Exception as e:
+            log.exception('workflow stream run')
+            await q.put({'type': 'error', 'detail': str(e)})
+        finally:
+            await q.put(None)
+
+    task = asyncio.create_task(runner())
+
+    async def event_gen():
+        try:
+            while True:
+                ev = await q.get()
+                if ev is None:
+                    break
+                try:
+                    line = f"data: {json.dumps(ev, ensure_ascii=False, default=str)}\n\n"
+                except Exception as ex:
+                    log.exception('agent-workflows stream serialize')
+                    line = (
+                        f"data: {json.dumps({'type': 'error', 'detail': f'Serialize: {ex!s}'}, ensure_ascii=False)}\n\n"
+                    )
+                yield line
+        finally:
+            await task
+
+    return StreamingResponse(event_gen(), media_type='text/event-stream')
+
+
+async def _run_workflow_with_progress(
+    request: Request,
+    body: RunBody,
+    progress_emit: Optional[Callable[[dict[str, Any]], Awaitable[None]]] = None,
+) -> dict[str, Any]:
     try:
         wf = WorkflowPayload.model_validate(body.workflow)
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f'Invalid workflow: {e}') from e
 
     node_by_id = {n.id: n for n in wf.nodes}
+    id_to_expr_key = _workflow_nodes_to_expression_keys(wf.nodes)
     node_ids = set(node_by_id.keys())
     agents_by_id = {a.id: a for a in body.agents}
 
@@ -452,6 +579,10 @@ async def run_workflow(
         'failed_node_id': None,
         'failed_error': None,
     }
+
+    async def _emit(ev: dict[str, Any]) -> None:
+        if progress_emit is not None:
+            await progress_emit(ev)
 
     def _fail_run(nid: str, message: str) -> None:
         run_state['halted'] = True
@@ -715,6 +846,7 @@ async def run_workflow(
             )
 
         if nt == 'group':
+            await _emit({'type': 'node_begin', 'nodeId': nid, 'nodeType': 'group'})
             _gt0 = time.perf_counter()
             _gsz = 0
             results[nid] = make_wire([], text='')
@@ -731,6 +863,7 @@ async def run_workflow(
             )
             execution_order.append(nid)
             await _follow_edges(nid, 'group')
+            await _emit({'type': 'node_end', 'nodeId': nid})
             return
 
         if nt == 'merge':
@@ -743,6 +876,7 @@ async def run_workflow(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail='Merge node needs at least two incoming edges.',
                 )
+            await _emit({'type': 'node_begin', 'nodeId': nid, 'nodeType': 'merge'})
             _mt0 = time.perf_counter()
             _min_sz = sum(len(results.get(p, '')) for p in parents_list)
             sep = str((cfg or {}).get('separator') or '\n---\n')
@@ -785,6 +919,7 @@ async def run_workflow(
                 )
                 execution_order.append(nid)
                 await _follow_edges(nid, nt)
+                await _emit({'type': 'node_end', 'nodeId': nid})
                 return
 
             results[nid] = merged_str
@@ -800,6 +935,7 @@ async def run_workflow(
             )
             execution_order.append(nid)
             await _follow_edges(nid, nt)
+            await _emit({'type': 'node_end', 'nodeId': nid})
             return
 
         parent_id = parents_list[0] if len(parents_list) == 1 else None
@@ -820,6 +956,7 @@ async def run_workflow(
         if nid in visit_stack:
             raise ValueError('workflow execution hit a cycle')
         visit_stack.add(nid)
+        await _emit({'type': 'node_begin', 'nodeId': nid, 'nodeType': nt})
         _t_node = time.perf_counter()
         _input_sz = len(prior_full)
         try:
@@ -831,6 +968,8 @@ async def run_workflow(
                 elif nt == 'transform':
                     results[nid] = prior_full if parent_id else wrap_trigger('')
                 elif nt == 'http_request':
+                    results[nid] = prior_full if parent_id else wrap_trigger(body.user_input.strip() or '')
+                elif nt == 'telegram':
                     results[nid] = prior_full if parent_id else wrap_trigger(body.user_input.strip() or '')
                 elif nt == 'agent':
                     results[nid] = (
@@ -878,6 +1017,7 @@ async def run_workflow(
                 true_items: list[dict[str, Any]] = []
                 false_items: list[dict[str, Any]] = []
                 mode = str(cfg.get('conditionMode') or 'substring').strip().lower()
+                expr_node_map = _build_expr_node_map(results, id_to_expr_key)
                 for idx, raw in enumerate(raw_items):
                     norm = _normalize_wire_item_entry(raw)
                     b = _eval_if_on_single_item(
@@ -885,6 +1025,7 @@ async def run_workflow(
                         cfg,
                         batch_json_list=batch_json_list,
                         item_index=idx,
+                        expr_node_map=expr_node_map,
                     )
                     (true_items if b else false_items).append(norm)
                 tx = f'{len(true_items)} true / {len(false_items)} false'
@@ -943,6 +1084,7 @@ async def run_workflow(
                 tpl = str(cfg.get('template', '{{input}}'))
                 ui = body.user_input.strip()
                 all_jsons = wire_items_to_json_list(items)
+                expr_node_map = _build_expr_node_map(results, id_to_expr_key)
                 out_rows: list[dict[str, Any]] = []
                 text_parts: list[str] = []
                 for idx, item0 in enumerate(items):
@@ -960,7 +1102,7 @@ async def run_workflow(
                         .replace('{{user_input}}', ui)
                         .replace('{{USER_INPUT}}', ui)
                     )
-                    ctx = ExprContext(json=j0, item_index=idx, input=all_jsons)
+                    ctx = ExprContext(json=j0, item_index=idx, input=all_jsons, node=expr_node_map)
                     out = substitute_template(base, ctx)
                     text_parts.append(out)
                     out_rows.append(
@@ -1026,7 +1168,8 @@ async def run_workflow(
                 )
                 if not isinstance(j0h, dict):
                     j0h = {}
-                ctx_http = ExprContext(json=j0h, item_index=0, input=all_jsons_http)
+                expr_node_map = _build_expr_node_map(results, id_to_expr_key)
+                ctx_http = ExprContext(json=j0h, item_index=0, input=all_jsons_http, node=expr_node_map)
                 surl = substitute_template(surl, ctx_http).strip()
                 sh_json = substitute_template(sh_json, ctx_http)
                 sbody = substitute_template(sbody, ctx_http)
@@ -1102,6 +1245,26 @@ async def run_workflow(
                     t0=_t_node,
                     in_sz=_input_sz,
                 )
+            elif nt == 'telegram':
+                expr_map_tg = _build_expr_node_map(results, id_to_expr_key)
+                out_tg = await run_telegram_node(
+                    cfg,
+                    prior_full=prior_full,
+                    prior_text=prior_text,
+                    user_input=body.user_input,
+                    expr_node_map=expr_map_tg,
+                )
+                results[nid] = out_tg
+                _log_node(
+                    nid,
+                    {
+                        'nodeId': nid,
+                        'nodeType': 'telegram',
+                        'outputPreview': wire_display_text(parse_wire(out_tg))[:500],
+                    },
+                    t0=_t_node,
+                    in_sz=_input_sz,
+                )
             elif nt == 'agent':
                 outcome = await _execute_agent_step(
                     nid,
@@ -1161,6 +1324,7 @@ async def run_workflow(
                 in_sz=_input_sz,
             )
         finally:
+            await _emit({'type': 'node_end', 'nodeId': nid})
             visit_stack.discard(nid)
 
     try:

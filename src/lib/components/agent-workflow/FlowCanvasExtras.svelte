@@ -9,7 +9,7 @@
 	import type { Writable } from 'svelte/store';
 	import type { i18n as I18nInstance } from 'i18next';
 
-	import { openNodePicker, workflowContextMenu } from './editorUiStore';
+	import { openNodeInspector, openNodePicker, workflowContextMenu } from './editorUiStore';
 	import { connectEndBridge } from './connectBridge';
 	import { addNodeAt, toggleEdgeDisabled, toggleNodeDisabled } from './workflowStore';
 	import type { FlowNodeTypeId } from './nodeRegistry';
@@ -314,6 +314,16 @@
 		on:click|stopPropagation
 	>
 		{#if ctx.kind === 'node'}
+			<button
+				type="button"
+				class="w-full px-3 py-2 text-left hover:bg-gray-100 dark:hover:bg-gray-800"
+				on:click={() => {
+					openNodeInspector(ctx.id);
+					closeContextMenu();
+				}}
+			>
+				{$i18n.t('Node settings')}
+			</button>
 			<button
 				type="button"
 				class="w-full px-3 py-2 text-left hover:bg-gray-100 dark:hover:bg-gray-800"

@@ -21,6 +21,7 @@ export type WorkflowNodeKind =
 	| 'if_else'
 	| 'transform'
 	| 'http_request'
+	| 'telegram'
 	| 'merge'
 	| 'group';
 

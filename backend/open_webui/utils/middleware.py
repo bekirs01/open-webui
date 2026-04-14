@@ -2464,6 +2464,13 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
         # Export/conversion is server-side; must run even when MWS is off so follow-ups do not hit the LLM.
         form_data = await try_mws_export_conversion(request, form_data, user, metadata)
+        if not form_data.get('_mws_export_completion'):
+            try:
+                from open_webui.utils.mws_gpt.presentation_pipeline import try_mws_presentation_pipeline
+
+                form_data = await try_mws_presentation_pipeline(request, form_data, user, metadata)
+            except Exception as e:
+                log.warning('[MWS] presentation pipeline inlet: %s', e)
         if form_data.get('_mws_export_llm_fallback') and not form_data.get('_mws_export_completion'):
             form_data['messages'] = add_or_update_system_message(
                 '[EXPORT_FILE_REMINDER]\n'

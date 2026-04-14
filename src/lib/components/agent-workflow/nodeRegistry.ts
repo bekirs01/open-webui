@@ -5,6 +5,7 @@ export type FlowNodeTypeId =
 	| 'ifElse'
 	| 'transform'
 	| 'httpRequest'
+	| 'telegram'
 	| 'merge'
 	| 'group';
 
@@ -93,6 +94,21 @@ export const NODE_REGISTRY: Record<FlowNodeTypeId, NodeRegistryEntry> = {
 			body: '',
 			timeoutSeconds: 30,
 			followRedirects: false
+		},
+		...ports(1, [{ kind: 'source' }])
+	},
+	telegram: {
+		type: 'telegram',
+		labelKey: 'Telegram',
+		category: 'integrations',
+		icon: '✈',
+		defaultData: {
+			credentialMode: 'env' as const,
+			botToken: '',
+			botTokenEnv: 'TELEGRAM_BOT_TOKEN',
+			chatId: '',
+			messageText: '{{input}}',
+			parseMode: ''
 		},
 		...ports(1, [{ kind: 'source' }])
 	},

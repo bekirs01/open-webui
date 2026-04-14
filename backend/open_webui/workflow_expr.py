@@ -1,5 +1,6 @@
 """
-n8n-style expressions: {{$json.field}}, {{$itemIndex}}, {{$input.length}}
+n8n-style expressions:
+  {{$json.field}}, {{$node["Label"].json.field}}, {{$itemIndex}}, {{$input.length}}
 Safe evaluation — no arbitrary eval(); AST whitelist + fixed environment only.
 """
 
@@ -16,6 +17,8 @@ _RE_INPUT_LEN = re.compile(r"\$input\.length\b")
 _RE_INPUT = re.compile(r"\$input\b")
 # Dotted paths: $json.a.b (must run before bare $json)
 _RE_JSON_DOTTED = re.compile(r"\$json(?:\.\w+)+")
+# $node["Human-readable name"] — name may include spaces/parens (from unique key builder)
+_RE_NODE_BRACKET = re.compile(r'\$node\["([^"]*)"\]')
 
 
 def _json_get(obj: Any, *keys: str) -> Any:
@@ -56,9 +59,20 @@ def _replace_input_and_index(expr: str) -> str:
     return s
 
 
+def _replace_node_bracket(expr: str) -> str:
+    """Turn $node["Label"] into __node[...] using Python repr for the key string."""
+
+    def repl(m: re.Match) -> str:
+        name = m.group(1)
+        return f'__node[{repr(name)}]'
+
+    return _RE_NODE_BRACKET.sub(repl, expr)
+
+
 def preprocess_expression(expr: str) -> str:
     """Map n8n-style $-variables to sandbox names."""
     s = (expr or '').strip()
+    s = _replace_node_bracket(s)
     s = _replace_json_paths(s)
     s = _replace_input_and_index(s)
     return s
@@ -182,6 +196,12 @@ def _safe_eval_ast(node: ast.AST, env: dict[str, Any]) -> Any:
             if _safe_eval_ast(node.test, env)
             else _safe_eval_ast(node.orelse, env)
         )
+    if isinstance(node, ast.Attribute):
+        v = _safe_eval_ast(node.value, env)
+        attr = node.attr
+        if isinstance(v, dict) and attr in v:
+            return v[attr]
+        raise ValueError(f'Unknown or forbidden attribute: {attr!r}')
     raise ValueError(f'Unsupported syntax in expression: {type(node).__name__}')
 
 
@@ -192,16 +212,20 @@ class ExprContext:
     json: dict[str, Any]
     item_index: int
     input: list[dict[str, Any]]
+    #: Map display key -> {'json': first item dict, 'items': full items list} (n8n-style $node).
+    node: Optional[dict[str, Any]] = None
 
 
 def build_eval_env(ctx: ExprContext) -> dict[str, Any]:
     """Sandbox environment for preprocess + AST eval (no __builtins__ tricks)."""
+    node_map: dict[str, Any] = ctx.node if isinstance(ctx.node, dict) else {}
     return {
         '__builtins__': {},
         '_json_get': _json_get,
         '__json': ctx.json,
         '__item_index': ctx.item_index,
         '__input': ctx.input,
+        '__node': node_map,
         'len': len,
         'str': str,
         'int': int,

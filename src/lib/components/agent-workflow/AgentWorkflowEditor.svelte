@@ -11,9 +11,16 @@
 	import { marked } from 'marked';
 
 	import { theme, models } from '$lib/stores';
-	import { generateWorkflowFromDescription, suggestNodeFieldsFromContext } from './workflowAiGenerate';
-	import { modelLabel, pickDefaultWorkflowAiModelId } from './workflowAiModelPick';
-	import { runAgentWorkflow, type AgentWorkflowRunResponse } from '$lib/apis/agentWorkflow';
+	import {
+		editWorkflowWithPatch,
+		generateWorkflowFromDescription,
+		suggestNodeFieldsFromContext
+	} from './workflowAiGenerate';
+	import { pickDefaultWorkflowAiModelId } from './workflowAiModelPick';
+	import {
+		runAgentWorkflowStream,
+		type AgentWorkflowRunResponse
+	} from '$lib/apis/agentWorkflow';
 	import {
 		SvelteFlow,
 		SvelteFlowProvider,
@@ -31,11 +38,13 @@
 	import IfElseNode from './IfElseNode.svelte';
 	import TransformNode from './TransformNode.svelte';
 	import HttpRequestNode from './HttpRequestNode.svelte';
+	import TelegramNode from './TelegramNode.svelte';
 	import MergeNode from './MergeNode.svelte';
 	import GroupNode from './GroupNode.svelte';
 	import WorkflowEdge from './WorkflowEdge.svelte';
 	import FlowCanvasExtras from './FlowCanvasExtras.svelte';
 	import NodePicker from './NodePicker.svelte';
+	import NodeInspectorModal from './NodeInspectorModal.svelte';
 
 	import type { AgentWorkflowV1 } from './types';
 	import { validateAgentWorkflow } from './validate';
@@ -46,7 +55,15 @@
 		addNodeAt
 	} from './workflowStore';
 	import { clearWorkflowHistory, pushUndoSnapshot } from './workflowHistory';
-	import { runStepHighlightId } from './editorUiStore';
+	import {
+		clearRunVisualization,
+		closeNodeInspector,
+		nodeInspectorModalId,
+		runActiveNodeId,
+		runPathEdgeIds,
+		runPathNodeIds
+	} from './editorUiStore';
+	import { computePathEdgeIdsFromOrder } from './workflowRunPath';
 	import { buildWorkflowV1, jsonToFlowNode, normalizeWorkflowForLoad } from './serialization';
 	import { isValidWorkflowConnection } from './connectionRules';
 	import { connectEndBridge } from './connectBridge';
@@ -70,6 +87,7 @@
 		ifElse: IfElseNode,
 		transform: TransformNode,
 		httpRequest: HttpRequestNode,
+		telegram: TelegramNode,
 		merge: MergeNode,
 		group: GroupNode
 	} as unknown as NodeTypes;
@@ -89,22 +107,15 @@
 
 	let validationDebouncedCode: string | null = null;
 	let validationTimer: ReturnType<typeof setTimeout> | undefined;
-	let runHighlightTimer: ReturnType<typeof setInterval> | null = null;
 
 	let aiDraftDescription = '';
-	/** Empty string = use automatic pick (text/JSON-suitable model, not image-gen). */
-	let aiModelManual = '';
 	let aiBusy = false;
 	let aiHintsText = '';
+	/** Shown after full "Generate graph": optional pass-1 rewritten spec from the model. */
+	let aiNormalizedSpecText = '';
 
-	$: aiAutoModelId = pickDefaultWorkflowAiModelId($models ?? []) || firstModelId() || '';
-	$: effectiveAiModelId = (aiModelManual || aiAutoModelId).trim();
-	$: {
-		const list = $models ?? [];
-		if (aiModelManual && !list.some((m) => m.id === aiModelManual)) {
-			aiModelManual = '';
-		}
-	}
+	/** Best-effort text/JSON model for draft generation & field hints (never image-only). */
+	$: workflowDraftModelId = pickDefaultWorkflowAiModelId($models ?? []) || firstModelId() || '';
 
 	function buildWf(): AgentWorkflowV1 {
 		return buildWorkflowV1(get(nodes), get(edges), get(startNodeId));
@@ -209,13 +220,26 @@
 
 	$: selectedNodeCount = $nodes.filter((n) => n.selected).length;
 
+	/**
+	 * After onMount we always have at least one default trigger if the canvas was empty, so
+	 * `nodes.length > 0` is not a useful signal for "use patch vs full generate".
+	 * Full JSON generation is appropriate only for an empty graph or a lone trigger with no edges.
+	 */
+	function shouldGenerateFullWorkflowFromCanvas(): boolean {
+		const ns = get(nodes);
+		const es = get(edges);
+		if (es.length > 0) return false;
+		if (ns.length === 0) return true;
+		return ns.length === 1 && String(ns[0]?.type) === 'trigger';
+	}
+
 	async function handleAiGenerateDraft() {
 		const token = browser ? localStorage.token ?? '' : '';
 		if (!token) {
 			toast.error(get(i18n).t('Not authenticated.'));
 			return;
 		}
-		const mid = effectiveAiModelId;
+		const mid = workflowDraftModelId;
 		if (!mid) {
 			toast.error(get(i18n).t('No chat model available. Add a model in settings.'));
 			return;
@@ -226,14 +250,26 @@
 		}
 		aiBusy = true;
 		aiHintsText = '';
+		aiNormalizedSpecText = '';
 		try {
-			const r = await generateWorkflowFromDescription(
-				token,
-				mid,
-				aiDraftDescription,
-				firstModelId(),
-				$models ?? []
-			);
+			const wfCurrent = toWorkflowJson();
+			const useFullGenerate = shouldGenerateFullWorkflowFromCanvas();
+			const r = useFullGenerate
+				? await generateWorkflowFromDescription(
+						token,
+						mid,
+						aiDraftDescription,
+						firstModelId(),
+						$models ?? []
+					)
+				: await editWorkflowWithPatch(
+						token,
+						mid,
+						aiDraftDescription,
+						wfCurrent,
+						firstModelId(),
+						$models ?? []
+					);
 			if (!r.ok) {
 				toast.error(
 					r.error.startsWith('validation:')
@@ -244,7 +280,13 @@
 			}
 			fromWorkflowJson(r.workflow, { recordHistory: true });
 			saveLocal();
+			if (useFullGenerate && r.ok && r.normalizedDescription) {
+				aiNormalizedSpecText = r.normalizedDescription;
+			}
 			toast.success(get(i18n).t('Workflow draft applied. Review the canvas and save if needed.'));
+		} catch (e) {
+			const msg = e instanceof Error ? e.message : String(e);
+			toast.error(msg);
 		} finally {
 			aiBusy = false;
 		}
@@ -256,7 +298,7 @@
 			toast.error(get(i18n).t('Not authenticated.'));
 			return;
 		}
-		const mid = effectiveAiModelId;
+		const mid = workflowDraftModelId;
 		if (!mid) {
 			toast.error(get(i18n).t('No chat model available. Add a model in settings.'));
 			return;
@@ -333,6 +375,10 @@
 		edges: import('@xyflow/svelte').Edge[];
 	}) {
 		const ids = new Set(deletedNodes.map((n) => n.id));
+		const openInspector = get(nodeInspectorModalId);
+		if (openInspector && ids.has(openInspector)) {
+			closeNodeInspector();
+		}
 		const start = get(startNodeId);
 		if (start && ids.has(start)) {
 			const remaining = get(nodes).filter((n) => !ids.has(n.id));
@@ -366,11 +412,7 @@
 		runError = null;
 		running = true;
 		lastRun = null;
-		if (runHighlightTimer != null) {
-			clearInterval(runHighlightTimer);
-			runHighlightTimer = null;
-		}
-		runStepHighlightId.set(null);
+		clearRunVisualization();
 		try {
 			const wf = toWorkflowJson();
 			const err = validateAgentWorkflow(wf);
@@ -402,36 +444,35 @@
 						modelId: (d.modelId || '').trim()
 					};
 				});
-			const res = await runAgentWorkflow(token, {
-				user_input: userInput,
-				workflow: wf as unknown as Record<string, unknown>,
-				agents: payloadAgents,
-				image_prompt_refine_model: firstModelId() || undefined
-			});
+			const flowEdges = get(edges);
+			const res = await runAgentWorkflowStream(
+				token,
+				{
+					user_input: userInput,
+					workflow: wf as unknown as Record<string, unknown>,
+					agents: payloadAgents,
+					image_prompt_refine_model: firstModelId() || undefined
+				},
+				(ev) => {
+					if (ev.type === 'node_begin') {
+						runActiveNodeId.set(ev.nodeId);
+					} else if (ev.type === 'node_end') {
+						runActiveNodeId.set(null);
+					}
+				}
+			);
 			lastRun = res;
+			runActiveNodeId.set(null);
 			const order =
 				res.order?.length > 0 ? res.order : res.logs.map((l) => l.nodeId);
-			if (order.length === 0) {
-				runStepHighlightId.set(null);
-			} else {
-				let step = 0;
-				runStepHighlightId.set(order[0] ?? null);
-				runHighlightTimer = setInterval(() => {
-					step += 1;
-					if (step >= order.length) {
-						if (runHighlightTimer != null) clearInterval(runHighlightTimer);
-						runHighlightTimer = null;
-						runStepHighlightId.set(null);
-						return;
-					}
-					runStepHighlightId.set(order[step] ?? null);
-				}, 480);
-			}
+			runPathNodeIds.set(new Set(order));
+			runPathEdgeIds.set(computePathEdgeIdsFromOrder(order, flowEdges));
 			toast.success(get(i18n).t('Workflow finished.'));
 		} catch (e) {
 			const msg = e instanceof Error ? e.message : String(e);
 			runError = msg;
 			toast.error(msg);
+			clearRunVisualization();
 		} finally {
 			running = false;
 		}
@@ -589,34 +630,9 @@
 							'Describe steps and branches in plain language. The graph will be replaced — use undo if needed.'
 						)}
 					</p>
-					<p class="text-[10px] text-gray-700 dark:text-gray-300 leading-snug">
-						<span class="font-medium text-gray-800 dark:text-gray-100"
-							>{$i18n.t('Draft model')}:</span
-						>
-						<span class="ml-1">{modelLabel($models ?? [], effectiveAiModelId)}</span>
-						{#if !aiModelManual}
-							<span class="ml-1 text-emerald-700 dark:text-emerald-400"
-								>({$i18n.t('automatic — text / JSON')})</span
-							>
-						{/if}
-					</p>
-					<details class="text-[10px] text-gray-600 dark:text-gray-400">
-						<summary class="cursor-pointer text-violet-700 dark:text-violet-300 select-none">
-							{$i18n.t('Override model')}
-						</summary>
-						<select
-							class="mt-1 w-full text-xs rounded-lg border border-gray-200 dark:border-gray-700 px-2 py-1.5 bg-white dark:bg-gray-900"
-							bind:value={aiModelManual}
-							disabled={aiBusy}
-						>
-							<option value="">{$i18n.t('Automatic (recommended)')}</option>
-							{#each $models ?? [] as m (m.id)}
-								<option value={m.id}>{m.name ?? m.id}</option>
-							{/each}
-						</select>
-					</details>
 					<textarea
-						class="w-full text-xs rounded-lg border border-gray-200 dark:border-gray-700 px-2 py-1.5 min-h-[72px] bg-white dark:bg-gray-900"
+						rows="8"
+						class="w-full text-xs rounded-lg border border-gray-200 dark:border-gray-700 px-2 py-1.5 min-h-[160px] resize-y bg-white dark:bg-gray-900"
 						placeholder={$i18n.t('e.g. Trigger, then IF user input equals 1, call agent A else agent B…')}
 						bind:value={aiDraftDescription}
 						disabled={aiBusy}
@@ -640,6 +656,16 @@
 							{$i18n.t('Suggest fields')}
 						</button>
 					</div>
+					{#if aiNormalizedSpecText}
+						<div class="text-[10px] space-y-1">
+							<div class="font-medium text-gray-700 dark:text-gray-300">
+								{$i18n.t('AI interpreted specification')}
+							</div>
+							<pre
+								class="whitespace-pre-wrap text-gray-800 dark:text-gray-200 bg-white/80 dark:bg-gray-900/80 rounded-lg p-2 border border-violet-100 dark:border-violet-900 max-h-32 overflow-y-auto"
+							>{aiNormalizedSpecText}</pre>
+						</div>
+					{/if}
 					{#if aiHintsText}
 						<pre
 							class="text-[10px] whitespace-pre-wrap text-gray-800 dark:text-gray-200 bg-white/80 dark:bg-gray-900/80 rounded-lg p-2 border border-violet-100 dark:border-violet-900 max-h-40 overflow-y-auto"
@@ -706,9 +732,13 @@
 
 		<p class="text-xs text-gray-500 dark:text-gray-400 px-3 py-2 border-t border-gray-100 dark:border-gray-800">
 			{$i18n.t(
-				'Blocks run from the Start node. IF uses two outputs (true/false). Use a Merge block for multiple inputs. Double-click or Shift+click empty canvas to add a node. To remove a connection, click the wire (it highlights), then press Delete or Backspace, or use the trash control on the canvas.'
+				'Double-click a block to open settings (Input / Parameters / Output). Blocks run from the Start node. IF uses two outputs (true/false). Merge joins branches. Double-click empty canvas to add a node; click a wire then Delete to remove it.'
 			)}
 		</p>
+
+		{#if $nodeInspectorModalId}
+			<NodeInspectorModal nodeId={$nodeInspectorModalId} {lastRun} {userInput} />
+		{/if}
 	</div>
 
 	<NodePicker defaultModelId={firstModelId()} onPicked={bumpStructural} />
