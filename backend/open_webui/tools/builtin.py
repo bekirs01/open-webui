@@ -572,6 +572,101 @@ async def export_image_to_pdf(
         return json.dumps({'error': str(e)}, ensure_ascii=False)
 
 
+async def export_table_to_csv(
+    table_content: str,
+    title: str = 'Table',
+    __request__: Request = None,
+    __user__: dict = None,
+    __event_emitter__= None,
+    __chat_id__: str = None,
+    __message_id__: str = None,
+) -> str:
+    """
+    Export tabular data to a downloadable CSV file.
+    Use when the user asks to download a table as CSV, Excel-compatible, or spreadsheet format.
+    table_content: Markdown table, TSV lines, or comma-separated rows.
+    """
+    if __request__ is None:
+        return json.dumps({'error': 'Request context not available'}, ensure_ascii=False)
+
+    try:
+        import csv as csv_mod
+
+        from starlette.datastructures import UploadFile
+
+        from open_webui.routers.files import upload_file_handler
+
+        rows: list[list[str]] = []
+        raw = (table_content or '').strip()
+
+        if '|' in raw:
+            for line in raw.split('\n'):
+                line = line.strip()
+                if not line or line.startswith('|') and set(line.replace('|', '').strip()) <= {'-', ':', ' '}:
+                    continue
+                cells = [c.strip() for c in line.strip('|').split('|')]
+                rows.append(cells)
+        elif '\t' in raw:
+            for line in raw.split('\n'):
+                if line.strip():
+                    rows.append(line.split('\t'))
+        else:
+            for line in raw.split('\n'):
+                if line.strip():
+                    rows.append([c.strip() for c in line.split(',')])
+
+        if not rows:
+            return json.dumps({'error': 'No tabular data found in input'}, ensure_ascii=False)
+
+        buf = io.StringIO()
+        writer = csv_mod.writer(buf, quoting=csv_mod.QUOTE_MINIMAL)
+        for row in rows:
+            writer.writerow(row)
+        csv_bytes = buf.getvalue().encode('utf-8-sig')
+
+        fn = _safe_export_filename(title, 'csv')
+        user = UserModel(**__user__) if __user__ else None
+        file = UploadFile(
+            file=io.BytesIO(csv_bytes),
+            filename=fn,
+            headers={'content-type': 'text/csv'},
+        )
+        file_item = upload_file_handler(
+            __request__,
+            file=file,
+            metadata={},
+            process=False,
+            user=user,
+        )
+        entry = {
+            'type': 'file',
+            'url': file_item.id,
+            'name': fn,
+            'size': len(csv_bytes),
+            'content_type': 'text/csv',
+        }
+        if __chat_id__ and __message_id__:
+            Chats.add_message_files_by_id_and_message_id(__chat_id__, __message_id__, [entry])
+        if __event_emitter__:
+            await __event_emitter__(
+                {
+                    'type': 'chat:message:files',
+                    'data': {'files': [entry]},
+                }
+            )
+        return json.dumps(
+            {
+                'status': 'success',
+                'message': 'CSV is attached; the user can download and open it in Excel or any spreadsheet app.',
+                'filename': fn,
+            },
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        log.exception(f'export_table_to_csv error: {e}')
+        return json.dumps({'error': str(e)}, ensure_ascii=False)
+
+
 # =============================================================================
 # CODE INTERPRETER TOOLS
 # =============================================================================

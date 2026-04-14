@@ -107,12 +107,44 @@ _PHRASE_REPLACEMENTS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r'\bkoşan\s+(?:bir\s+)?uçak\b', re.I), 'airplane_in_motion_runway'),
     (re.compile(r'\bkanatlı\s+kedi\b', re.I), 'winged cat with visible wings'),
     (re.compile(r'\bkanatlı\b', re.I), 'winged'),
+    (re.compile(r'\byağmurlu\s+(?:bir\s+)?(?:gün|hava)\b', re.I), 'rainy day'),
+    (re.compile(r'\bgün\s*batımı\b', re.I), 'sunset'),
+    (re.compile(r'\bgün\s*doğumu\b', re.I), 'sunrise'),
+    (re.compile(r'\bdeniz\s+kenarı\b', re.I), 'seaside'),
+    (re.compile(r'\bdeniz\s+manzarası\b', re.I), 'sea landscape'),
+    (re.compile(r'\bdağ\s+manzarası\b', re.I), 'mountain landscape'),
+    (re.compile(r'\bkış\s+manzarası\b', re.I), 'winter landscape'),
+    (re.compile(r'\bsonbahar\s+manzarası\b', re.I), 'autumn landscape'),
+    (re.compile(r'\bgece\s+gökyüzü\b', re.I), 'night sky'),
+    (re.compile(r'\byıldızlı\s+gökyüzü\b', re.I), 'starry night sky'),
+    (re.compile(r'\bküçük\s+(?:bir\s+)?ev\b', re.I), 'a small house'),
+    (re.compile(r'\bbüyük\s+(?:bir\s+)?şehir\b', re.I), 'a big city'),
+    (re.compile(r'\byaşlı\s+(?:bir\s+)?adam\b', re.I), 'an old man'),
+    (re.compile(r'\bgenç\s+(?:bir\s+)?kadın\b', re.I), 'a young woman'),
+    (re.compile(r'\bküçük\s+(?:bir\s+)?çocuk\b', re.I), 'a small child'),
+    (re.compile(r'\byalnız\s+(?:bir\s+)?ağaç\b', re.I), 'a lonely tree'),
+    (re.compile(r'\bkarlı\s+dağ\b', re.I), 'snowy mountain'),
+    (re.compile(r'\buçan\s+(?:bir\s+)?kuş\b', re.I), 'a flying bird'),
+    (re.compile(r'\byüzen\s+(?:bir\s+)?balık\b', re.I), 'a swimming fish'),
 )
 
 _TOKEN_WORDS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r'(?<![\w])kırmızı(?![\w])', re.I), 'red'),
     (re.compile(r'(?<![\w])kirmizi(?![\w])', re.I), 'red'),
     (re.compile(r'(?<![\w])mavi(?![\w])', re.I), 'blue'),
+    (re.compile(r'(?<![\w])yeşil(?![\w])', re.I), 'green'),
+    (re.compile(r'(?<![\w])yesil(?![\w])', re.I), 'green'),
+    (re.compile(r'(?<![\w])sarı(?![\w])', re.I), 'yellow'),
+    (re.compile(r'(?<![\w])sari(?![\w])', re.I), 'yellow'),
+    (re.compile(r'(?<![\w])beyaz(?![\w])', re.I), 'white'),
+    (re.compile(r'(?<![\w])siyah(?![\w])', re.I), 'black'),
+    (re.compile(r'(?<![\w])turuncu(?![\w])', re.I), 'orange'),
+    (re.compile(r'(?<![\w])mor(?![\w])', re.I), 'purple'),
+    (re.compile(r'(?<![\w])pembe(?![\w])', re.I), 'pink'),
+    (re.compile(r'(?<![\w])kahverengi(?![\w])', re.I), 'brown'),
+    (re.compile(r'(?<![\w])gri(?![\w])', re.I), 'gray'),
+    (re.compile(r'(?<![\w])altın(?![\w])', re.I), 'golden'),
+    (re.compile(r'(?<![\w])gümüş(?![\w])', re.I), 'silver'),
     (re.compile(r'(?<![\w])bir(?![\w])', re.I), 'a'),
     (re.compile(r'(?<![\w])kedi(?![\w])', re.I), 'cat'),
     (re.compile(r'(?<![\w])köpek(?![\w])', re.I), 'dog'),
@@ -121,6 +153,133 @@ _TOKEN_WORDS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r'(?<![\w])uçak(?![\w])', re.I), 'airplane'),
     (re.compile(r'(?<![\w])ucak(?![\w])', re.I), 'airplane'),
     (re.compile(r'(?<![\w])portre(?![\w])', re.I), 'portrait'),
+    (re.compile(r'(?<![\w])ev(?![\w])', re.I), 'house'),
+    (re.compile(r'(?<![\w])ağaç(?![\w])', re.I), 'tree'),
+    (re.compile(r'(?<![\w])agac(?![\w])', re.I), 'tree'),
+    (re.compile(r'(?<![\w])çiçek(?![\w])', re.I), 'flower'),
+    (re.compile(r'(?<![\w])cicek(?![\w])', re.I), 'flower'),
+    (re.compile(r'(?<![\w])gül(?![\w])', re.I), 'rose'),
+    (re.compile(r'(?<![\w])göl(?![\w])', re.I), 'lake'),
+    (re.compile(r'(?<![\w])nehir(?![\w])', re.I), 'river'),
+    (re.compile(r'(?<![\w])deniz(?![\w])', re.I), 'sea'),
+    (re.compile(r'(?<![\w])dağ(?![\w])', re.I), 'mountain'),
+    (re.compile(r'(?<![\w])dag(?![\w])', re.I), 'mountain'),
+    (re.compile(r'(?<![\w])orman(?![\w])', re.I), 'forest'),
+    (re.compile(r'(?<![\w])gökyüzü(?![\w])', re.I), 'sky'),
+    (re.compile(r'(?<![\w])güneş(?![\w])', re.I), 'sun'),
+    (re.compile(r'(?<![\w])ay(?![\w])', re.I), 'moon'),
+    (re.compile(r'(?<![\w])yıldız(?![\w])', re.I), 'star'),
+    (re.compile(r'(?<![\w])bulut(?![\w])', re.I), 'cloud'),
+    (re.compile(r'(?<![\w])yağmur(?![\w])', re.I), 'rain'),
+    (re.compile(r'(?<![\w])kar(?![\w])', re.I), 'snow'),
+    (re.compile(r'(?<![\w])ateş(?![\w])', re.I), 'fire'),
+    (re.compile(r'(?<![\w])su(?![\w])', re.I), 'water'),
+    (re.compile(r'(?<![\w])kuş(?![\w])', re.I), 'bird'),
+    (re.compile(r'(?<![\w])kus(?![\w])', re.I), 'bird'),
+    (re.compile(r'(?<![\w])balık(?![\w])', re.I), 'fish'),
+    (re.compile(r'(?<![\w])balik(?![\w])', re.I), 'fish'),
+    (re.compile(r'(?<![\w])at(?![\w])', re.I), 'horse'),
+    (re.compile(r'(?<![\w])aslan(?![\w])', re.I), 'lion'),
+    (re.compile(r'(?<![\w])kaplan(?![\w])', re.I), 'tiger'),
+    (re.compile(r'(?<![\w])fil(?![\w])', re.I), 'elephant'),
+    (re.compile(r'(?<![\w])tavşan(?![\w])', re.I), 'rabbit'),
+    (re.compile(r'(?<![\w])ayı(?![\w])', re.I), 'bear'),
+    (re.compile(r'(?<![\w])kurt(?![\w])', re.I), 'wolf'),
+    (re.compile(r'(?<![\w])tilki(?![\w])', re.I), 'fox'),
+    (re.compile(r'(?<![\w])yılan(?![\w])', re.I), 'snake'),
+    (re.compile(r'(?<![\w])kelebek(?![\w])', re.I), 'butterfly'),
+    (re.compile(r'(?<![\w])ejderha(?![\w])', re.I), 'dragon'),
+    (re.compile(r'(?<![\w])robot(?![\w])', re.I), 'robot'),
+    (re.compile(r'(?<![\w])uzay(?![\w])', re.I), 'space'),
+    (re.compile(r'(?<![\w])gezegen(?![\w])', re.I), 'planet'),
+    (re.compile(r'(?<![\w])gemi(?![\w])', re.I), 'ship'),
+    (re.compile(r'(?<![\w])köprü(?![\w])', re.I), 'bridge'),
+    (re.compile(r'(?<![\w])kale(?![\w])', re.I), 'castle'),
+    (re.compile(r'(?<![\w])cami(?![\w])', re.I), 'mosque'),
+    (re.compile(r'(?<![\w])şehir(?![\w])', re.I), 'city'),
+    (re.compile(r'(?<![\w])sehir(?![\w])', re.I), 'city'),
+    (re.compile(r'(?<![\w])köy(?![\w])', re.I), 'village'),
+    (re.compile(r'(?<![\w])yol(?![\w])', re.I), 'road'),
+    (re.compile(r'(?<![\w])sokak(?![\w])', re.I), 'street'),
+    (re.compile(r'(?<![\w])park(?![\w])', re.I), 'park'),
+    (re.compile(r'(?<![\w])bahçe(?![\w])', re.I), 'garden'),
+    (re.compile(r'(?<![\w])plaj(?![\w])', re.I), 'beach'),
+    (re.compile(r'(?<![\w])çöl(?![\w])', re.I), 'desert'),
+    (re.compile(r'(?<![\w])büyük(?![\w])', re.I), 'big'),
+    (re.compile(r'(?<![\w])küçük(?![\w])', re.I), 'small'),
+    (re.compile(r'(?<![\w])güzel(?![\w])', re.I), 'beautiful'),
+    (re.compile(r'(?<![\w])eski(?![\w])', re.I), 'old'),
+    (re.compile(r'(?<![\w])yeni(?![\w])', re.I), 'new'),
+    (re.compile(r'(?<![\w])karanlık(?![\w])', re.I), 'dark'),
+    (re.compile(r'(?<![\w])aydınlık(?![\w])', re.I), 'bright'),
+    (re.compile(r'(?<![\w])mutlu(?![\w])', re.I), 'happy'),
+    (re.compile(r'(?<![\w])üzgün(?![\w])', re.I), 'sad'),
+    (re.compile(r'(?<![\w])korkunç(?![\w])', re.I), 'scary'),
+    (re.compile(r'(?<![\w])fantastik(?![\w])', re.I), 'fantastic'),
+    (re.compile(r'(?<![\w])gerçekçi(?![\w])', re.I), 'realistic'),
+    (re.compile(r'(?<![\w])soyut(?![\w])', re.I), 'abstract'),
+    (re.compile(r'(?<![\w])renkli(?![\w])', re.I), 'colorful'),
+    (re.compile(r'(?<![\w])sade(?![\w])', re.I), 'simple'),
+    (re.compile(r'(?<![\w])detaylı(?![\w])', re.I), 'detailed'),
+    (re.compile(r'(?<![\w])yüzen(?![\w])', re.I), 'floating'),
+    (re.compile(r'(?<![\w])uçan(?![\w])', re.I), 'flying'),
+    (re.compile(r'(?<![\w])koşan(?![\w])', re.I), 'running'),
+    (re.compile(r'(?<![\w])oturan(?![\w])', re.I), 'sitting'),
+    (re.compile(r'(?<![\w])duran(?![\w])', re.I), 'standing'),
+    (re.compile(r'(?<![\w])uyuyan(?![\w])', re.I), 'sleeping'),
+    (re.compile(r'(?<![\w])gülen(?![\w])', re.I), 'smiling'),
+    (re.compile(r'(?<![\w])ağlayan(?![\w])', re.I), 'crying'),
+    (re.compile(r'(?<![\w])dans\s*eden(?![\w])', re.I), 'dancing'),
+    (re.compile(r'(?<![\w])yürüyen(?![\w])', re.I), 'walking'),
+    # Russian common words
+    (re.compile(r'(?<![\w])кот(?![\w])', re.I), 'cat'),
+    (re.compile(r'(?<![\w])кошка(?![\w])', re.I), 'cat'),
+    (re.compile(r'(?<![\w])собака(?![\w])', re.I), 'dog'),
+    (re.compile(r'(?<![\w])машина(?![\w])', re.I), 'car'),
+    (re.compile(r'(?<![\w])дом(?![\w])', re.I), 'house'),
+    (re.compile(r'(?<![\w])дерево(?![\w])', re.I), 'tree'),
+    (re.compile(r'(?<![\w])небо(?![\w])', re.I), 'sky'),
+    (re.compile(r'(?<![\w])солнце(?![\w])', re.I), 'sun'),
+    (re.compile(r'(?<![\w])луна(?![\w])', re.I), 'moon'),
+    (re.compile(r'(?<![\w])звезда(?![\w])', re.I), 'star'),
+    (re.compile(r'(?<![\w])море(?![\w])', re.I), 'sea'),
+    (re.compile(r'(?<![\w])гора(?![\w])', re.I), 'mountain'),
+    (re.compile(r'(?<![\w])река(?![\w])', re.I), 'river'),
+    (re.compile(r'(?<![\w])лес(?![\w])', re.I), 'forest'),
+    (re.compile(r'(?<![\w])цветок(?![\w])', re.I), 'flower'),
+    (re.compile(r'(?<![\w])птица(?![\w])', re.I), 'bird'),
+    (re.compile(r'(?<![\w])рыба(?![\w])', re.I), 'fish'),
+    (re.compile(r'(?<![\w])лошадь(?![\w])', re.I), 'horse'),
+    (re.compile(r'(?<![\w])красный(?![\w])', re.I), 'red'),
+    (re.compile(r'(?<![\w])синий(?![\w])', re.I), 'blue'),
+    (re.compile(r'(?<![\w])зелёный(?![\w])', re.I), 'green'),
+    (re.compile(r'(?<![\w])зеленый(?![\w])', re.I), 'green'),
+    (re.compile(r'(?<![\w])жёлтый(?![\w])', re.I), 'yellow'),
+    (re.compile(r'(?<![\w])белый(?![\w])', re.I), 'white'),
+    (re.compile(r'(?<![\w])чёрный(?![\w])', re.I), 'black'),
+    (re.compile(r'(?<![\w])черный(?![\w])', re.I), 'black'),
+    (re.compile(r'(?<![\w])большой(?![\w])', re.I), 'big'),
+    (re.compile(r'(?<![\w])маленький(?![\w])', re.I), 'small'),
+    (re.compile(r'(?<![\w])красивый(?![\w])', re.I), 'beautiful'),
+    (re.compile(r'(?<![\w])город(?![\w])', re.I), 'city'),
+    (re.compile(r'(?<![\w])замок(?![\w])', re.I), 'castle'),
+    (re.compile(r'(?<![\w])дракон(?![\w])', re.I), 'dragon'),
+    (re.compile(r'(?<![\w])робот(?![\w])', re.I), 'robot'),
+    (re.compile(r'(?<![\w])космос(?![\w])', re.I), 'space'),
+    (re.compile(r'(?<![\w])портрет(?![\w])', re.I), 'portrait'),
+    # Arabic common words
+    (re.compile(r'(?<![\w])قطة(?![\w])'), 'cat'),
+    (re.compile(r'(?<![\w])كلب(?![\w])'), 'dog'),
+    (re.compile(r'(?<![\w])سيارة(?![\w])'), 'car'),
+    (re.compile(r'(?<![\w])بيت(?![\w])'), 'house'),
+    (re.compile(r'(?<![\w])شجرة(?![\w])'), 'tree'),
+    (re.compile(r'(?<![\w])بحر(?![\w])'), 'sea'),
+    (re.compile(r'(?<![\w])جبل(?![\w])'), 'mountain'),
+    (re.compile(r'(?<![\w])شمس(?![\w])'), 'sun'),
+    (re.compile(r'(?<![\w])قمر(?![\w])'), 'moon'),
+    (re.compile(r'(?<![\w])أحمر(?![\w])'), 'red'),
+    (re.compile(r'(?<![\w])أزرق(?![\w])'), 'blue'),
+    (re.compile(r'(?<![\w])أخضر(?![\w])'), 'green'),
 )
 
 # Whole-message match only: "farklı ..." at the start must NOT count (would steal prior prompt).
@@ -671,9 +830,36 @@ def _append_grounding_block(base: str, grounding: str | None) -> str:
     )
 
 
+_NON_LATIN_RESIDUAL = re.compile(
+    r'[\u0400-\u052F'  # Cyrillic
+    r'\u4E00-\u9FFF\u3400-\u4DBF'  # CJK
+    r'\u3040-\u309F\u30A0-\u30FF'  # Kana
+    r'\uAC00-\uD7AF'  # Hangul
+    r'\u0600-\u06FF\u0750-\u077F'  # Arabic
+    r'\u0590-\u05FF'  # Hebrew
+    r'\u0E00-\u0E7F'  # Thai
+    r'\u0900-\u097F'  # Devanagari
+    r']'
+)
+
+
+def _ensure_english_prompt(prompt: str) -> str:
+    """Strip residual non-Latin characters and add translation directive if needed."""
+    if not _NON_LATIN_RESIDUAL.search(prompt):
+        return prompt
+    cleaned = _NON_LATIN_RESIDUAL.sub('', prompt)
+    cleaned = re.sub(r'  +', ' ', cleaned).strip()
+    return (
+        f'[IMPORTANT: Interpret the following image description in English. '
+        f'Any non-English words below are user intent — treat them as if translated to English.] '
+        f'{cleaned}'
+    )
+
+
 def build_mws_image_prompt(user_text: str, previous_user_text: str | None = None) -> str:
     """
-    Build an English-leaning prompt for OpenAI-compatible image APIs.
+    Build an English prompt for OpenAI-compatible image APIs.
+    All output is forced to English for better image generation quality.
     """
     raw = (user_text or '').strip()
     if not raw:
@@ -699,7 +885,7 @@ def build_mws_image_prompt(user_text: str, previous_user_text: str | None = None
             lighting='varied',
             quality_extra='high detail',
         )
-        return _append_grounding_block(f'{base} {_variation_instruction(seed)}', grounding)
+        return _ensure_english_prompt(_append_grounding_block(f'{base} {_variation_instruction(seed)}', grounding))
 
     base = _build_base_image_prompt(working)
 
@@ -707,7 +893,7 @@ def build_mws_image_prompt(user_text: str, previous_user_text: str | None = None
         seed = _stable_seed_from_text(working, raw) ^ random.randrange(1 << 29)
         base = f'{base} {_variation_instruction(seed)}'
 
-    return _append_grounding_block(base, grounding)
+    return _ensure_english_prompt(_append_grounding_block(base, grounding))
 
 
 def get_default_image_edit_negative_prompt() -> str:

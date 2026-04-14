@@ -1161,6 +1161,11 @@ async def generate_chat_completion(
                     part.get('text', '') for part in message['content'] if part.get('type') in ('input_text', 'text')
                 )
 
+    _internal_prefixes = ('mws_', '_mws_', 'features', 'background_tasks')
+    for _k in list(payload.keys()):
+        if _k.startswith(_internal_prefixes) or _k in ('chat_id', 'session_id', 'direct'):
+            payload.pop(_k, None)
+
     payload = json.dumps(payload)
 
     r = None

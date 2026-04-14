@@ -24,6 +24,18 @@ def test_detect_english():
 
 def test_detect_russian():
     assert detect_reply_language_profile('Трамп откуда и где родился?').code == 'ru'
+    assert detect_reply_language_profile('как меня зовут?').code == 'ru'
+
+
+def test_russian_user_keeps_cyrillic_in_sanitize():
+    ans = 'Вас зовут так, как вы указали в прошлом чате.'
+    assert sanitize_leaked_scripts(ans, 'как меня зовут?') == ans
+
+
+def test_sanitize_skips_when_user_text_missing():
+    s = 'Полный ответ на русском.'
+    assert sanitize_leaked_scripts(s, '') == s
+    assert sanitize_leaked_scripts(s, None) == s
 
 
 def test_lock_contains_marker():

@@ -58,7 +58,6 @@ from open_webui.routers.pipelines import (
     process_pipeline_inlet_filter,
     process_pipeline_outlet_filter,
 )
-from open_webui.routers.memories import query_memory, QueryMemoryForm
 
 from open_webui.utils.webhook import post_webhook
 from open_webui.utils.files import (
@@ -1392,43 +1391,189 @@ async def chat_completion_tools_handler(
     return body, {'sources': sources}
 
 
-async def chat_memory_handler(request: Request, form_data: dict, extra_params: dict, user):
+def _messages_contain_images(messages: list[dict]) -> bool:
+    """Return True when any message in the list carries image attachments."""
+    for m in messages:
+        for f in m.get('files', []):
+            if f.get('type') == 'image' or (f.get('content_type') or '').startswith('image/'):
+                return True
+        if isinstance(m.get('content'), list):
+            for part in m['content']:
+                if isinstance(part, dict) and part.get('type') in ('image_url', 'image'):
+                    return True
+    return False
+
+
+async def chat_folder_peer_context_handler(
+    request: Request, form_data: dict, extra_params: dict, user
+):
+    """Inject recent user snippets from sibling chats in the same folder."""
+    if os.environ.get('FOLDER_SHARED_MEMORY', 'true').lower() != 'true':
+        return form_data
+    if form_data.get('_mws_export_completion'):
+        return form_data
     try:
-        results = await query_memory(
+        md = extra_params.get('__metadata__') or {}
+        chat_id = md.get('chat_id')
+        if not chat_id or not user:
+            return form_data
+        folder_id = Chats.get_chat_folder_id(chat_id, user.id) or md.get('folder_id')
+        if not folder_id:
+            return form_data
+
+        has_images = _messages_contain_images(form_data.get('messages', []))
+
+        from open_webui.utils.folder_peer_context import build_folder_peer_context
+
+        block = build_folder_peer_context(
+            user_id=user.id,
+            current_chat_id=chat_id,
+            folder_id=folder_id,
+            max_bytes_override=2000 if has_images else None,
+            max_siblings_override=3 if has_images else None,
+            max_turns_override=2 if has_images else None,
+        )
+        if not (block or '').strip():
+            return form_data
+        form_data['messages'] = add_or_update_system_message(
+            block + '\n',
+            form_data['messages'],
+            append=True,
+        )
+    except Exception as e:
+        log.debug('folder peer context: %s', e)
+    return form_data
+
+
+async def chat_memory_handler(request: Request, form_data: dict, extra_params: dict, user):
+    from open_webui.models.memories import Memories
+    from open_webui.utils.long_term_memory.retrieval import fetch_ranked_memories
+
+    try:
+        top_k = int(os.environ.get('USER_MEMORY_TOP_K', '8'))
+        top_k = max(1, min(top_k, 32))
+        if _messages_contain_images(form_data.get('messages', [])):
+            top_k = min(top_k, 3)
+        q = get_last_user_message(form_data['messages']) or ''
+        apply_scope = os.environ.get('FOLDER_SHARED_MEMORY', 'true').lower() == 'true'
+        md = extra_params.get('__metadata__') or {}
+        cid = md.get('chat_id')
+        folder_scope_id = None
+        if cid and user:
+            folder_scope_id = Chats.get_chat_folder_id(cid, user.id)
+        if not folder_scope_id:
+            folder_scope_id = md.get('folder_id')
+        ranked = await fetch_ranked_memories(
             request,
-            QueryMemoryForm(
-                **{
-                    'content': get_last_user_message(form_data['messages']) or '',
-                    'k': 3,
-                }
-            ),
             user,
+            q,
+            top_k,
+            folder_scope_id=folder_scope_id,
+            apply_folder_scope=apply_scope,
         )
     except Exception as e:
         log.debug(e)
-        results = None
+        ranked = []
 
-    user_context = ''
-    if results and hasattr(results, 'documents'):
-        if results.documents and len(results.documents) > 0:
-            for doc_idx, doc in enumerate(results.documents[0]):
-                created_at_date = 'Unknown Date'
+    if not ranked:
+        return form_data
 
-                if results.metadatas[0][doc_idx].get('created_at'):
-                    created_at_timestamp = results.metadatas[0][doc_idx]['created_at']
-                    created_at_date = time.strftime('%Y-%m-%d', time.localtime(created_at_timestamp))
+    grouped: dict[str, list[str]] = {}
+    _CAT_LABELS = {
+        'preference': 'Preferences',
+        'profile': 'User Profile',
+        'project': 'Projects',
+        'task': 'Tasks',
+        'constraint': 'Constraints',
+        'communication_style': 'Communication Style',
+        'habit': 'Habits',
+        'ongoing_context': 'Current Context',
+        'lesson': 'Lessons Learned',
+        'entity': 'Important People/Things',
+        'custom': 'Other',
+    }
+    for mem in ranked:
+        created_at_date = (
+            time.strftime('%Y-%m-%d', time.localtime(mem.created_at)) if mem.created_at else ''
+        )
+        cat_key = mem.category or 'custom'
+        label = _CAT_LABELS.get(cat_key, cat_key.replace('_', ' ').title())
+        date_tag = f' ({created_at_date})' if created_at_date else ''
+        entry = f'- {mem.content}{date_tag}'
+        grouped.setdefault(label, []).append(entry)
+        try:
+            Memories.increment_access(mem.id, user.id)
+        except Exception:
+            pass
 
-                user_context += f'{doc_idx + 1}. [{created_at_date}] {doc}\n'
+    lines: list[str] = []
+    for label, entries in grouped.items():
+        lines.append(f'**{label}:**')
+        lines.extend(entries)
+    user_context = '\n'.join(lines)
+
+    if not user_context.strip():
+        return form_data
 
     form_data['messages'] = add_or_update_system_message(
-        f'User Context:\n{user_context}\n', form_data['messages'], append=True
+        'Long-term memory about this user (remembered from past conversations):\n'
+        'These are curated facts. Use them to personalize responses. '
+        'If the user provides NEW information that contradicts a memory, trust the user and adapt. '
+        'Never reveal memory scores or internal metadata.\n\n'
+        f'{user_context}\n',
+        form_data['messages'],
+        append=True,
     )
 
     return form_data
 
 
+async def chat_imported_context_handler(request: Request, form_data: dict, extra_params: dict, user):
+    """Inject compact cross-chat snapshot when chat.meta.cross_chat references a snapshot."""
+    from open_webui.models.chat_context_snapshots import ChatContextSnapshots
+    from open_webui.models.chats import Chats
+    from open_webui.utils.cross_chat.prompt_block import format_snapshot_for_prompt
+
+    if os.environ.get('ENABLE_CROSS_CHAT_CONTEXT', 'true').lower() != 'true':
+        return form_data
+
+    meta_outer = extra_params.get('__metadata__') or {}
+    chat_id = meta_outer.get('chat_id')
+    if not chat_id:
+        return form_data
+
+    try:
+        ch = Chats.get_chat_by_id_and_user_id(chat_id, user.id)
+        if not ch:
+            return form_data
+        cc = (ch.meta or {}).get('cross_chat')
+        if not isinstance(cc, dict):
+            return form_data
+        sid = cc.get('snapshot_id')
+        if not sid:
+            return form_data
+        snap = ChatContextSnapshots.get_by_id(sid)
+        if not snap or snap.user_id != user.id:
+            return form_data
+        block = format_snapshot_for_prompt(snap)
+        if not (block or '').strip():
+            return form_data
+        label = cc.get('label') or 'previous chat'
+        form_data['messages'] = add_or_update_system_message(
+            'Imported context from another conversation (compact summary; not a full transcript).\n'
+            f'Carried over from: {label}\n\n'
+            f'{block}\n',
+            form_data['messages'],
+            append=True,
+        )
+    except Exception as e:
+        log.debug('imported context inject: %s', e)
+    return form_data
+
+
 async def chat_web_search_handler(request: Request, form_data: dict, extra_params: dict, user):
     event_emitter = extra_params['__event_emitter__']
+
     await event_emitter(
         {
             'type': 'status',
@@ -1911,6 +2056,41 @@ async def chat_image_generation_handler(request: Request, form_data: dict, extra
     else:
         # Create image(s) — gerçek görsel model id (pipeline metin modeline geçmiş olabilir)
         mid_sel = (form_data.get('_mws_image_generation_model_id') or form_data.get('model') or '').strip()
+        # Auto metin modeline düştüyse veya UI görsel özelliği açıksa: gerçek görsel model id’sine çöz
+        if mid_sel and not _pure_image_model(mid_sel):
+            try:
+                from open_webui.utils.mws_gpt.team_registry import (
+                    filter_team_available,
+                    pick_auto_target_model,
+                    team_allowlist_enabled,
+                )
+
+                avail_all = set((getattr(request.app.state, 'MODELS', None) or {}).keys())
+                av = filter_team_available(avail_all) if team_allowlist_enabled() else avail_all
+                img_fix, _w = pick_auto_target_model('image_generation', av, available_unfiltered=avail_all)
+                if not img_fix:
+                    img_fix = (
+                        getattr(request.app.state.config, 'MWS_GPT_DEFAULT_IMAGE_MODEL', None)
+                        or os.environ.get('MWS_GPT_DEFAULT_IMAGE_MODEL')
+                        or ''
+                    ).strip()
+                if img_fix and _pure_image_model(img_fix):
+                    mid_sel = img_fix
+                    form_data['_mws_image_generation_model_id'] = img_fix
+                    mr = metadata.get('mws_routing')
+                    if isinstance(mr, dict):
+                        metadata['mws_routing'] = {**mr, 'resolved_model_id': img_fix}
+                    await __event_emitter__(
+                        {
+                            'type': 'chat:completion',
+                            'data': {
+                                'mws_resolved_model_id': img_fix,
+                                'mws_routing_reason': 'image_generation_model_resolved',
+                            },
+                        }
+                    )
+            except Exception as _img_ex:
+                log.debug('[MWS] resolve image model when chat model is text: %s', _img_ex)
         # MWS: metin modeli + qwen-image saklandıysa LLM ile prompt genişletme yapma — yanlış nesne/çöp prompt üretir
         use_raw_prompt = (
             _pure_image_model(mid_sel)
@@ -1995,49 +2175,75 @@ async def chat_image_generation_handler(request: Request, form_data: dict, extra
             except Exception:
                 pass
 
-            images = await image_generations(
-                request=request,
-                form_data=CreateImageForm(**img_form),
-                metadata={
-                    'chat_id': metadata.get('chat_id', None),
-                    'message_id': metadata.get('message_id', None),
-                },
-                user=user,
+            images = await asyncio.wait_for(
+                image_generations(
+                    request=request,
+                    form_data=CreateImageForm(**img_form),
+                    metadata={
+                        'chat_id': metadata.get('chat_id', None),
+                        'message_id': metadata.get('message_id', None),
+                    },
+                    user=user,
+                ),
+                timeout=180,
             )
 
+            valid_images = [img for img in (images or []) if img.get('url')]
+
+            if valid_images:
+                await __event_emitter__(
+                    {
+                        'type': 'status',
+                        'data': {'description': 'Image created', 'done': True},
+                    }
+                )
+
+                await __event_emitter__(
+                    {
+                        'type': 'files',
+                        'data': {
+                            'files': [
+                                {
+                                    'type': 'image',
+                                    'url': image['url'],
+                                    'content_type': image.get('content_type', 'image/png'),
+                                }
+                                for image in valid_images
+                            ]
+                        },
+                    }
+                )
+
+                if form_data.get('_mws_pure_draw_intent'):
+                    system_message_content = ''
+                    form_data['_mws_skip_text_completion'] = True
+                else:
+                    system_message_content = (
+                        '<context>The image is displayed above. Reply briefly in the same natural language as the user\'s '
+                        'last message (match Turkish, English, etc.). Do not mix languages, do not output code fragments '
+                        'or token soup.</context>'
+                    )
+            else:
+                raise Exception('Image generation returned empty result')
+
+        except asyncio.TimeoutError:
+            log.warning('[MWS] image generation timed out after 180s')
             await __event_emitter__(
                 {
                     'type': 'status',
-                    'data': {'description': 'Image created', 'done': True},
-                }
-            )
-
-            await __event_emitter__(
-                {
-                    'type': 'files',
                     'data': {
-                        'files': [
-                            {
-                                'type': 'image',
-                                'url': image['url'],
-                            }
-                            for image in images
-                        ]
+                        'description': 'Image generation timed out — please try again',
+                        'done': True,
                     },
                 }
             )
+            system_message_content = (
+                '<context>Image generation timed out. Explain briefly in the same natural language as the user\'s '
+                'last message that the image took too long to generate and they should try again.</context>'
+            )
 
-            if form_data.get('_mws_pure_draw_intent'):
-                system_message_content = ''
-                form_data['_mws_skip_text_completion'] = True
-            else:
-                system_message_content = (
-                    '<context>The image is displayed above. Reply briefly in the same natural language as the user\'s '
-                    'last message (match Turkish, English, etc.). Do not mix languages, do not output code fragments '
-                    'or token soup.</context>'
-                )
         except Exception as e:
-            log.debug(e)
+            log.warning('[MWS] image generation failed: %s', e, exc_info=True)
 
             error_message = ''
             if isinstance(e, HTTPException):
@@ -2045,12 +2251,14 @@ async def chat_image_generation_handler(request: Request, form_data: dict, extra
                     error_message = e.detail.get('message', str(e.detail))
                 else:
                     error_message = str(e.detail)
+            else:
+                error_message = str(e)
 
             await __event_emitter__(
                 {
                     'type': 'status',
                     'data': {
-                        'description': f'An error occurred while generating an image',
+                        'description': f'Image generation error: {error_message[:120]}',
                         'done': True,
                     },
                 }
@@ -2354,7 +2562,32 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             metadata['selected_model_id'] = selected_model_id
 
     form_data = apply_params_to_form_data(form_data, model)
+
+    if form_data.get('mws_deep_thinking'):
+        if not form_data.get('reasoning_effort'):
+            form_data['reasoning_effort'] = 'high'
+        if form_data.get('temperature') is None or form_data.get('temperature', 1.0) > 0.6:
+            form_data['temperature'] = 0.6
+
+    if form_data.get('mws_human_mode'):
+        if form_data.get('temperature') is None or form_data.get('temperature', 0.7) < 0.85:
+            form_data['temperature'] = 0.85
+        form_data['_mws_human_mode'] = True
+
     log.debug(f'form_data: {form_data}')
+
+    # Son kullanıcı turundaki yüklemeler (DB ile üzerine yazılmadan önce); çoklu görsel→PDF/ZIP export için gerekli.
+    try:
+        _incoming_msgs = list(form_data.get('messages') or [])
+        form_data['_mws_incoming_last_user_files'] = []
+        for _m in reversed(_incoming_msgs):
+            if _m.get('role') == 'user':
+                for _f in _m.get('files') or []:
+                    if isinstance(_f, dict):
+                        form_data['_mws_incoming_last_user_files'].append(dict(_f))
+                break
+    except Exception:
+        form_data['_mws_incoming_last_user_files'] = form_data.get('_mws_incoming_last_user_files') or []
 
     # MWS: saf görsel / STT modelini chat yan etkilerinde kullanma (404). Geçici metin modeli + gerçek model id sakla.
     try:
@@ -2370,6 +2603,9 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 form_data['_mws_image_pipeline'] = True
                 form_data['model'] = rep
                 model = request.app.state.MODELS.get(rep) or model
+                mr = metadata.get('mws_routing')
+                if isinstance(mr, dict):
+                    metadata['mws_routing'] = {**mr, 'resolved_model_id': mid_ch}
                 log.info('[MWS] pipeline uses text model %s for side-effects; image id=%s', rep, mid_ch)
         elif cap_ch == 'audio_transcription' and not form_data.get('_mws_whisper_pipeline'):
             att = collect_attachment_kinds(form_data.get('files'), form_data.get('messages'))
@@ -2410,12 +2646,13 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 log.debug('merge incoming user message after DB load: %s', e)
 
             try:
+                import copy as _copy
                 from open_webui.utils.mws_gpt.artifact_resolver import (
                     extract_last_artifact_for_export,
                     extract_last_image_artifact_for_export,
                 )
 
-                _snap = list(form_data.get('messages') or [])
+                _snap = _copy.deepcopy(form_data.get('messages') or [])
                 form_data['_mws_last_artifact'] = extract_last_artifact_for_export(_snap)
                 form_data['_mws_last_image_artifact'] = extract_last_image_artifact_for_export(_snap)
             except Exception:
@@ -2473,13 +2710,20 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 log.warning('[MWS] presentation pipeline inlet: %s', e)
         if form_data.get('_mws_export_llm_fallback') and not form_data.get('_mws_export_completion'):
             form_data['messages'] = add_or_update_system_message(
-                '[EXPORT_FILE_REMINDER]\n'
-                'The user asked for a downloadable file (PDF, PNG, JPG, etc.). '
-                'You MUST call the built-in tools: export_markdown_to_pdf (tables/text/markdown), '
-                'export_markdown_to_png (text/table as image), export_image_to_pdf (for images). '
-                'Put the relevant content from the conversation into the tool. '
-                'Do not refuse or say you cannot save files — produce the attachment. '
-                'After the file is attached, reply in one short sentence.',
+                '[EXPORT_FILE_REMINDER — MANDATORY]\n'
+                'The user asked for a downloadable file. You MUST use the appropriate built-in tool NOW:\n'
+                '- export_markdown_to_pdf: for tables, text, markdown content → PDF download\n'
+                '- export_markdown_to_png: for tables/text as image → PNG download\n'
+                '- export_image_to_pdf: for converting an image to PDF\n'
+                '- export_table_to_csv: for tables/data → CSV/Excel-compatible download\n\n'
+                'CRITICAL RULES:\n'
+                '1. DO NOT refuse or say "I cannot save/export/download files"\n'
+                '2. DO NOT suggest the user copy-paste or use external tools\n'
+                '3. DO NOT just display the content — you MUST call the tool to create the file\n'
+                '4. Take the relevant content from the conversation and pass it to the tool\n'
+                '5. After the file is attached, reply in one short sentence confirming it is ready\n'
+                '6. If the user asked for CSV/Excel, use export_table_to_csv with the table content\n'
+                '7. If unsure which format, default to PDF with export_markdown_to_pdf',
                 form_data.get('messages') or [],
                 append=True,
             )
@@ -2764,13 +3008,26 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                     form_data['messages'],
                 )
 
-        if 'memory' in features and features['memory']:
-            # Skip forced memory injection when native FC is enabled - model can use memory tools
-            if (
-                metadata.get('params', {}).get('function_calling') != 'native'
-                and not form_data.get('_mws_pure_draw_intent')
-            ):
+        if _deep and extra_params.get('__event_emitter__'):
+            await extra_params['__event_emitter__'](
+                {
+                    'type': 'status',
+                    'data': {
+                        'action': 'deep_thinking',
+                        'description': 'Deep thinking mode active',
+                        'done': False,
+                    },
+                }
+            )
+
+        # Long-term memory + cross-chat snapshot injection (skip when native FC / pure draw)
+        if metadata.get('params', {}).get('function_calling') != 'native' and not form_data.get(
+            '_mws_pure_draw_intent'
+        ):
+            form_data = await chat_folder_peer_context_handler(request, form_data, extra_params, user)
+            if 'memory' in features and features['memory']:
                 form_data = await chat_memory_handler(request, form_data, extra_params, user)
+            form_data = await chat_imported_context_handler(request, form_data, extra_params, user)
 
         _grounded_bundle = (
             bool(form_data.get('_mws_research_grounded_image'))
@@ -3659,6 +3916,9 @@ async def non_streaming_chat_response_handler(response, ctx):
                     # Save message in the database
                     usage = normalize_usage(response_data.get('usage', {}) or {})
 
+                    _msg0 = (choices[0].get('message') or {}) if choices else {}
+                    _persist_files = _msg0.get('files')
+
                     Chats.upsert_message_to_chat_by_id_and_message_id(
                         metadata['chat_id'],
                         metadata['message_id'],
@@ -3668,6 +3928,7 @@ async def non_streaming_chat_response_handler(response, ctx):
                             'content': content,
                             'output': response_output,
                             **({'usage': usage} if usage else {}),
+                            **({'files': _persist_files} if _persist_files else {}),
                         },
                     )
 

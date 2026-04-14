@@ -83,7 +83,7 @@
 
 	<div slot="content">
 		<div
-			class="{className} rounded-2xl px-1 py-1 border border-gray-100 dark:border-gray-800 z-50 bg-white dark:bg-gray-850 dark:text-white shadow-lg text-sm"
+			class="{className} rounded-2xl px-1 py-1 border border-gray-100 dark:border-gray-800 z-50 bg-white dark:bg-neutral-800 dark:text-white shadow-lg text-sm"
 		>
 			{#if profile}
 				<div class=" flex gap-3.5 w-full p-2.5 items-center">
@@ -125,7 +125,7 @@
 				{#if $user?.status_emoji || $user?.status_message}
 					<div class="mx-1">
 						<button
-							class="mb-1 w-full gap-2 px-2.5 py-1.5 rounded-xl bg-gray-50 dark:text-white dark:bg-gray-900/50 text-black transition text-xs flex items-center"
+							class="mb-1 w-full gap-2 px-2.5 py-1.5 rounded-xl bg-gray-50 dark:text-white dark:bg-neutral-800/50 text-black transition text-xs flex items-center"
 							type="button"
 							on:click={() => {
 								show = false;
@@ -176,7 +176,7 @@
 				{:else}
 					<div class="mx-1">
 						<button
-							class="mb-1 w-full px-3 py-1.5 gap-1 rounded-xl bg-gray-50 dark:text-white dark:bg-gray-900/50 text-black transition text-xs flex items-center justify-center"
+							class="mb-1 w-full px-3 py-1.5 gap-1 rounded-xl bg-gray-50 dark:text-white dark:bg-neutral-800/50 text-black transition text-xs flex items-center justify-center"
 							type="button"
 							on:click={() => {
 								show = false;

@@ -7,7 +7,13 @@
 
 	import Modal from '$lib/components/common/Modal.svelte';
 	import AddMemoryModal from './AddMemoryModal.svelte';
-	import { deleteMemoriesByUserId, deleteMemoryById, getMemories } from '$lib/apis/memories';
+	import {
+		deleteMemoriesByUserId,
+		deleteMemoryById,
+		getMemories,
+		getMemoryStats,
+		updateMemoryById
+	} from '$lib/apis/memories';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import EditMemoryModal from './EditMemoryModal.svelte';
 	import localizedFormat from 'dayjs/plugin/localizedFormat';
@@ -29,10 +35,26 @@
 
 	let memories = [];
 	let loading = true;
+	let stats: { total: number; active: number; archived: number; by_category: Record<string, number> } | null = null;
 
 	let query = '';
+	let statusFilter = 'all';
+	let categoryFilter = 'all';
 	let orderBy = 'updated_at';
 	let direction = 'desc';
+
+	const CATEGORIES = [
+		'all',
+		'preference',
+		'profile',
+		'project',
+		'task',
+		'constraint',
+		'communication_style',
+		'habit',
+		'ongoing_context',
+		'custom'
+	];
 
 	const setSortKey = (key: string) => {
 		if (orderBy === key) {
@@ -51,9 +73,20 @@
 	let showClearConfirmDialog = false;
 	let showDeleteConfirm = false;
 
-	$: filteredMemories = query
-		? memories.filter((m) => m.content?.toLowerCase().includes(query.toLowerCase()))
-		: memories;
+	$: filteredMemories = memories.filter((m) => {
+		if (statusFilter !== 'all') {
+			const ms = m.status || 'active';
+			if (ms !== statusFilter) return false;
+		}
+		if (categoryFilter !== 'all') {
+			const mc = m.category || 'custom';
+			if (mc !== categoryFilter) return false;
+		}
+		if (query) {
+			return m.content?.toLowerCase().includes(query.toLowerCase());
+		}
+		return true;
+	});
 
 	$: sortedMemories = [...filteredMemories].sort((a, b) => {
 		let aVal, bVal;
@@ -84,9 +117,25 @@
 		showClearConfirmDialog = false;
 	};
 
+	const toggleArchive = async (memory: any) => {
+		const newStatus = (memory.status || 'active') === 'active' ? 'archived' : 'active';
+		const res = await updateMemoryById(localStorage.token, memory.id, memory.content, {
+			status: newStatus
+		}).catch((e) => {
+			toast.error(`${e}`);
+			return null;
+		});
+		if (res) {
+			toast.success(newStatus === 'archived' ? $i18n.t('Memory archived') : $i18n.t('Memory restored'));
+			memories = await getMemories(localStorage.token);
+			stats = await getMemoryStats(localStorage.token).catch(() => null);
+		}
+	};
+
 	$: if (show && memories.length === 0 && loading) {
 		(async () => {
 			memories = await getMemories(localStorage.token);
+			stats = await getMemoryStats(localStorage.token).catch(() => null);
 			loading = false;
 		})();
 	}
@@ -112,30 +161,55 @@
 		</div>
 
 		<div class="flex flex-col w-full px-5 pb-4 dark:text-gray-200">
-			<!-- Search -->
-			<div class="flex flex-1 items-center w-full mb-1">
-				<div class="self-center ml-1 mr-3">
-					<Search className="size-3.5" />
+			{#if stats}
+				<div class="flex gap-3 text-xs text-gray-500 dark:text-gray-400 mb-2 px-1">
+					<span>{$i18n.t('Total')}: {stats.total}</span>
+					<span>{$i18n.t('Active')}: {stats.active}</span>
+					<span>{$i18n.t('Archived')}: {stats.archived}</span>
 				</div>
-				<input
-					class="w-full text-sm py-1 rounded-r-xl outline-hidden bg-transparent"
-					bind:value={query}
-					placeholder={$i18n.t('Search Memories')}
-					maxlength="500"
-				/>
+			{/if}
 
-				{#if query}
-					<div class="self-center pl-1.5 translate-y-[0.5px] bg-transparent">
-						<button
-							class="p-0.5 rounded-full hover:bg-gray-100 dark:hover:bg-gray-900 transition"
-							on:click={() => {
-								query = '';
-							}}
-						>
-							<XMark className="size-3" strokeWidth="2" />
-						</button>
+			<!-- Search + Filters -->
+			<div class="flex flex-1 items-center w-full mb-1 gap-2">
+				<div class="flex flex-1 items-center">
+					<div class="self-center ml-1 mr-3">
+						<Search className="size-3.5" />
 					</div>
-				{/if}
+					<input
+						class="w-full text-sm py-1 rounded-r-xl outline-hidden bg-transparent"
+						bind:value={query}
+						placeholder={$i18n.t('Search Memories')}
+						maxlength="500"
+					/>
+					{#if query}
+						<div class="self-center pl-1.5 translate-y-[0.5px] bg-transparent">
+							<button
+								class="p-0.5 rounded-full hover:bg-gray-100 dark:hover:bg-gray-900 transition"
+								on:click={() => { query = ''; }}
+							>
+								<XMark className="size-3" strokeWidth="2" />
+							</button>
+						</div>
+					{/if}
+				</div>
+
+				<select
+					class="text-xs bg-transparent border border-gray-200 dark:border-gray-700 rounded-lg px-2 py-1 outline-none"
+					bind:value={statusFilter}
+				>
+					<option value="all">{$i18n.t('All Status')}</option>
+					<option value="active">{$i18n.t('Active')}</option>
+					<option value="archived">{$i18n.t('Archived')}</option>
+				</select>
+
+				<select
+					class="text-xs bg-transparent border border-gray-200 dark:border-gray-700 rounded-lg px-2 py-1 outline-none"
+					bind:value={categoryFilter}
+				>
+					{#each CATEGORIES as cat}
+						<option value={cat}>{cat === 'all' ? $i18n.t('All Categories') : cat.replace('_', ' ')}</option>
+					{/each}
+				</select>
 			</div>
 
 			<!-- Memories List -->
@@ -202,7 +276,7 @@
 						<div class="text-left text-sm w-full max-h-[28rem] overflow-y-auto">
 							{#each sortedMemories as memory (memory.id)}
 								<div
-									class="w-full flex justify-between items-center rounded-xl text-sm py-2 px-3 hover:bg-gray-50 dark:hover:bg-gray-850 transition cursor-pointer"
+									class="w-full flex justify-between items-center rounded-xl text-sm py-2 px-3 hover:bg-gray-50 dark:hover:bg-neutral-800 transition cursor-pointer {(memory.status || 'active') === 'archived' ? 'opacity-50' : ''}"
 									on:click={() => {
 										selectedMemory = memory;
 										showEditMemoryModal = true;
@@ -210,6 +284,13 @@
 								>
 									<div class="flex-1 min-w-0 pr-2">
 										<div class="text-ellipsis line-clamp-1">{memory.content}</div>
+										{#if memory.category || memory.source_type}
+											<div class="text-[0.65rem] text-gray-500 dark:text-gray-500">
+												{memory.category || ''}{memory.source_type
+													? ` · ${memory.source_type}`
+													: ''}
+											</div>
+										{/if}
 										<div class="text-xs text-gray-500 dark:text-gray-400">
 											{dayjs(memory.updated_at * 1000).format('MMM D, YYYY')}
 										</div>
@@ -222,33 +303,51 @@
 											{dayjs(memory.updated_at * 1000).format('h:mm A')}
 										</div>
 
-										<div class="flex text-gray-600 dark:text-gray-300">
-											<Tooltip content={$i18n.t('Edit')}>
-												<button
-													class="self-center w-fit text-sm p-1.5 hover:bg-black/5 dark:hover:bg-white/5 rounded-xl"
-													on:click={(e) => {
-														e.stopPropagation();
-														selectedMemory = memory;
-														showEditMemoryModal = true;
-													}}
-												>
-													<Pencil className="size-4" />
-												</button>
-											</Tooltip>
+									<div class="flex text-gray-600 dark:text-gray-300">
+										<Tooltip content={(memory.status || 'active') === 'active' ? $i18n.t('Archive') : $i18n.t('Restore')}>
+											<button
+												class="self-center w-fit text-sm p-1.5 hover:bg-black/5 dark:hover:bg-white/5 rounded-xl"
+												on:click={(e) => {
+													e.stopPropagation();
+													toggleArchive(memory);
+												}}
+											>
+												<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="size-4">
+													{#if (memory.status || 'active') === 'active'}
+														<path stroke-linecap="round" stroke-linejoin="round" d="m20.25 7.5-.625 10.632a2.25 2.25 0 0 1-2.247 2.118H6.622a2.25 2.25 0 0 1-2.247-2.118L3.75 7.5m8.25 3v6.75m0 0-3-3m3 3 3-3M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125Z" />
+													{:else}
+														<path stroke-linecap="round" stroke-linejoin="round" d="m20.25 7.5-.625 10.632a2.25 2.25 0 0 1-2.247 2.118H6.622a2.25 2.25 0 0 1-2.247-2.118L3.75 7.5m8.25 3v6.75m0 0 3-3m-3 3-3-3M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125Z" />
+													{/if}
+												</svg>
+											</button>
+										</Tooltip>
 
-											<Tooltip content={$i18n.t('Delete')}>
-												<button
-													class="self-center w-fit text-sm p-1.5 hover:bg-black/5 dark:hover:bg-white/5 rounded-xl"
-													on:click={(e) => {
-														e.stopPropagation();
-														selectedMemory = memory;
-														showDeleteConfirm = true;
-													}}
-												>
-													<GarbageBin className="size-4" strokeWidth="1.5" />
-												</button>
-											</Tooltip>
-										</div>
+										<Tooltip content={$i18n.t('Edit')}>
+											<button
+												class="self-center w-fit text-sm p-1.5 hover:bg-black/5 dark:hover:bg-white/5 rounded-xl"
+												on:click={(e) => {
+													e.stopPropagation();
+													selectedMemory = memory;
+													showEditMemoryModal = true;
+												}}
+											>
+												<Pencil className="size-4" />
+											</button>
+										</Tooltip>
+
+										<Tooltip content={$i18n.t('Delete')}>
+											<button
+												class="self-center w-fit text-sm p-1.5 hover:bg-black/5 dark:hover:bg-white/5 rounded-xl"
+												on:click={(e) => {
+													e.stopPropagation();
+													selectedMemory = memory;
+													showDeleteConfirm = true;
+												}}
+											>
+												<GarbageBin className="size-4" strokeWidth="1.5" />
+											</button>
+										</Tooltip>
+									</div>
 									</div>
 								</div>
 							{/each}

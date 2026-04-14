@@ -213,6 +213,8 @@ type Settings = {
 	userLocation?: any;
 	webSearch?: any;
 	memory?: boolean;
+	/** Allow server to auto-extract long-term memories after each reply */
+	memory_auto_extract?: boolean;
 	autoTags?: boolean;
 	autoFollowUps?: boolean;
 	splitLargeChunks?(body: any, splitLargeChunks: any): unknown;

@@ -883,35 +883,9 @@ if frontend_loader.exists():
 
 CUSTOM_NAME = os.environ.get('CUSTOM_NAME', '')
 
-if CUSTOM_NAME:
-    try:
-        r = requests.get(f'https://api.openwebui.com/api/v1/custom/{CUSTOM_NAME}')
-        data = r.json()
-        if r.ok:
-            if 'logo' in data:
-                WEBUI_FAVICON_URL = url = (
-                    f'https://api.openwebui.com{data["logo"]}' if data['logo'][0] == '/' else data['logo']
-                )
-
-                r = requests.get(url, stream=True)
-                if r.status_code == 200:
-                    with open(f'{STATIC_DIR}/favicon.png', 'wb') as f:
-                        r.raw.decode_content = True
-                        shutil.copyfileobj(r.raw, f)
-
-            if 'splash' in data:
-                url = f'https://api.openwebui.com{data["splash"]}' if data['splash'][0] == '/' else data['splash']
-
-                r = requests.get(url, stream=True)
-                if r.status_code == 200:
-                    with open(f'{STATIC_DIR}/splash.png', 'wb') as f:
-                        r.raw.decode_content = True
-                        shutil.copyfileobj(r.raw, f)
-
-            WEBUI_NAME = data['name']
-    except Exception as e:
-        log.exception(e)
-        pass
+# Vision branding — uzak sunucudan logo/isim üzerine yazılmasını devre dışı bırak
+# if CUSTOM_NAME:
+#     ... (eski Open WebUI telemetri kodu devre dışı)
 
 
 ####################################
@@ -1710,8 +1684,8 @@ def validate_cors_origin(origin):
 # For production, you should only need one host as
 # fastapi serves the svelte-kit built frontend and backend from the same host and port.
 # To test CORS_ALLOW_ORIGIN locally, you can set something like
-# CORS_ALLOW_ORIGIN=http://localhost:5173;http://localhost:8080
-# in your .env file depending on your frontend port, 5173 in this case.
+# CORS_ALLOW_ORIGIN=http://localhost:1000;http://localhost:9090
+# in your .env file depending on your frontend port (e.g. 1000) and backend (e.g. 9090).
 CORS_ALLOW_ORIGIN = os.environ.get('CORS_ALLOW_ORIGIN', '*').split(';')
 
 # Allows custom URL schemes (e.g., app://) to be used as origins for CORS.
@@ -1784,24 +1758,24 @@ TITLE_GENERATION_PROMPT_TEMPLATE = PersistentConfig(
 )
 
 DEFAULT_TITLE_GENERATION_PROMPT_TEMPLATE = """### Task:
-Generate a concise, 3-5 word title with an emoji summarizing the chat history.
+Generate a short, professional chat title (about 3–6 words) summarizing the conversation — **plain text only, no emojis**.
 ### Guidelines:
-- The title should clearly represent the main theme or subject of the conversation.
-- Use emojis that enhance understanding of the topic, but avoid quotation marks or special formatting.
-- Write the title in exactly ONE language: the same as the user's last message (match Turkish, English, Russian, etc.). Do not mix scripts or languages unless the user explicitly asked for that.
-- Prioritize accuracy over excessive creativity; keep it clear and simple.
+- Style: calm and clear, like a product sidebar label (similar to ChatGPT): no emoji, no leading symbols, no hashtags.
+- Do not output any emoji or pictograph (Unicode symbols used as icons); letters, digits, and normal punctuation only.
+- The title should reflect the main topic only.
+- Write in exactly ONE language: the same as the user's last message (Turkish, English, Russian, etc.). Do not mix scripts unless the user explicitly mixed them.
+- No quotation marks wrapping the whole title; avoid ALL CAPS.
 - Your entire response must consist solely of the JSON object, without any introductory or concluding text.
-- The output must be a single, raw JSON object, without any markdown code fences or other encapsulating text.
-- Ensure no conversational text, affirmations, or explanations precede or follow the raw JSON output, as this will cause direct parsing failure.
+- The output must be a single, raw JSON object, without markdown code fences.
 ### Output:
 JSON format: { "title": "your concise title here" }
 ### Examples:
-- { "title": "📉 Stock Market Trends" },
-- { "title": "🍪 Perfect Chocolate Chip Recipe" },
-- { "title": "Evolution of Music Streaming" },
-- { "title": "Remote Work Productivity Tips" },
-- { "title": "Artificial Intelligence in Healthcare" },
-- { "title": "🎮 Video Game Development Insights" }
+- { "title": "Stock market trends overview" },
+- { "title": "Chocolate chip cookie recipe" },
+- { "title": "Music streaming history" },
+- { "title": "Remote work productivity" },
+- { "title": "Healthcare AI applications" },
+- { "title": "Video game development basics" }
 ### Chat History:
 <chat_history>
 {{MESSAGES:END:2}}

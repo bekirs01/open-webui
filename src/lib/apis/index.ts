@@ -1,5 +1,5 @@
 import { WEBUI_BASE_URL } from '$lib/constants';
-import { convertOpenApiToToolPayload } from '$lib/utils';
+import { convertOpenApiToToolPayload, removeEmojis } from '$lib/utils';
 import { getOpenAIModelsDirect } from './openai';
 
 const TOOL_SERVER_FETCH_TIMEOUT = 10000;
@@ -690,7 +690,10 @@ export const generateTitle = async (
 
 			// Step 6: If there's a "tags" key, return the tags array; otherwise, return an empty array
 			if (parsed && parsed.title) {
-				return parsed.title;
+				const plain = removeEmojis(String(parsed.title))
+					.replace(/\s+/g, ' ')
+					.trim();
+				return plain || null;
 			} else {
 				return null;
 			}

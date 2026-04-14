@@ -1,6 +1,6 @@
 {
-  "name": "Open WebUI",
-  "short_name": "WebUI",
+  "name": "Vision",
+  "short_name": "Vision",
   "icons": [
     {
       "src": "/static/web-app-manifest-192x192.png",

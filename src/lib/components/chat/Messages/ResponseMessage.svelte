@@ -57,6 +57,7 @@
 	import ContentRenderer from './ContentRenderer.svelte';
 	import { KokoroWorker } from '$lib/workers/KokoroWorker';
 	import FileItem from '$lib/components/common/FileItem.svelte';
+	import ArrowDownTray from '$lib/components/icons/ArrowDownTray.svelte';
 	import FollowUps from './ResponseMessage/FollowUps.svelte';
 	import { fade } from 'svelte/transition';
 	import { flyAndScale } from '$lib/utils/transitions';
@@ -680,8 +681,8 @@
 								dir={$settings?.chatDirection ?? 'auto'}
 							>
 								{#each message.files as file}
-									<div>
-										{#if file.type === 'image' || (file?.content_type ?? '').startsWith('image/')}
+									<div class="flex flex-wrap items-center gap-2">
+										{#if file.type !== 'file' && (file.type === 'image' || (file?.content_type ?? '').startsWith('image/'))}
 											<Image
 												src={file.url?.startsWith('data') ||
 												file.url?.startsWith('http') ||
@@ -699,6 +700,18 @@
 												size={file?.size}
 												small={true}
 											/>
+										{/if}
+										{#if file.type !== 'image' && !(file?.content_type ?? '').startsWith('image/') && (file.id || (typeof file.url === 'string' && /^[0-9a-f-]{36}$/i.test(file.url.trim())))}
+											{@const dlId = file.id || file.url.trim()}
+											<a
+												class="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-800 shadow-sm hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700"
+												href={`${WEBUI_API_BASE_URL}/files/${dlId}/content?attachment=true`}
+												download={file.name || 'download'}
+												title={$i18n.t('Download')}
+											>
+												<ArrowDownTray className="size-4" strokeWidth="1.75" />
+												<span>{$i18n.t('Download')}</span>
+											</a>
 										{/if}
 									</div>
 								{/each}

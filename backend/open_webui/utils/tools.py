@@ -88,6 +88,7 @@ from open_webui.tools.builtin import (
     export_markdown_to_pdf,
     export_markdown_to_png,
     export_image_to_pdf,
+    export_table_to_csv,
 )
 
 import copy
@@ -513,6 +514,7 @@ def get_builtin_tools(
                 export_markdown_to_pdf,
                 export_markdown_to_png,
                 export_image_to_pdf,
+                export_table_to_csv,
             ]
         )
 

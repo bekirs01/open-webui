@@ -95,34 +95,30 @@ def inject_mws_fallback_models(request: Any, models: list[dict[str, Any]]) -> No
         existing.add(mid)
         log.info('MWS GPT: injected env fallback model id=%s urlIdx=%s', mid, idx)
 
-    for auto_id, auto_name in (
-        (AUTO_ENTRY_ID, 'MWS Auto'),
-        (LEGACY_AUTO_ENTRY_ID, 'MWS Auto (legacy)'),
-    ):
-        if auto_id not in existing:
-            models.insert(
-                0,
-                {
-                    'id': auto_id,
-                    'name': auto_name,
-                    'object': 'model',
-                    'created': int(time.time()),
-                    'owned_by': 'openai',
-                    'openai': {'id': auto_id},
-                    'urlIdx': idx,
-                    'connection_type': 'external',
-                    'tags': [tag, {'name': 'auto'}],
-                    'mws_public': True,
-                    'info': {
-                        'meta': {
-                            'description': 'Routing mode: picks a real team model per message (never sent to API).',
-                            'mws_auto': True,
-                            'mws_ui_label': 'Auto',
-                        }
-                    },
+    if AUTO_ENTRY_ID not in existing:
+        models.insert(
+            0,
+            {
+                'id': AUTO_ENTRY_ID,
+                'name': 'MWS Auto',
+                'object': 'model',
+                'created': int(time.time()),
+                'owned_by': 'openai',
+                'openai': {'id': AUTO_ENTRY_ID},
+                'urlIdx': idx,
+                'connection_type': 'external',
+                'tags': [tag, {'name': 'auto'}],
+                'mws_public': True,
+                'info': {
+                    'meta': {
+                        'description': 'Routing mode: picks a real team model per message (never sent to API).',
+                        'mws_auto': True,
+                        'mws_ui_label': 'Auto',
+                    }
                 },
-            )
-            existing.add(auto_id)
+            },
+        )
+        existing.add(AUTO_ENTRY_ID)
 
     for m in models:
         mid = m.get('id')

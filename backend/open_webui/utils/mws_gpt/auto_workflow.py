@@ -38,12 +38,8 @@ def deep_thinking_text_polish_enabled() -> bool:
 
 
 # Reviewer / polish models (after code draft or heavy reasoning)
-AUTO_REVIEWER_ORDER: list[str] = [
-    'llama-3.3-70b-instruct',
-    'glm-4.6-357b',
-    'qwen3-32b',
-    'gpt-oss-120b',
-]
+# Import from central registry to keep in sync
+from open_webui.utils.mws_gpt.team_registry import AUTO_REVIEWER_ORDER
 
 
 def build_auto_workflow(

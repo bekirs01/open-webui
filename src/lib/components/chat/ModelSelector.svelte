@@ -15,6 +15,15 @@
 	export let showSetDefault = true;
 
 	const capabilityLabel = (model: Record<string, unknown>) => {
+		const catLabel = model?.info?.meta?.mws_ui_category_label;
+		if (typeof catLabel === 'string' && catLabel.length) {
+			const quality = model?.info?.meta?.mws_quality_tier;
+			const speed = model?.info?.meta?.mws_speed_tier;
+			let suffix = '';
+			if (quality === 'excellent') suffix = ' ★';
+			else if (speed === 'fast') suffix = ' ⚡';
+			return catLabel + suffix;
+		}
 		const ui = model?.info?.meta?.mws_ui_label;
 		if (typeof ui === 'string' && ui.length) return ui;
 		const caps = model?.info?.meta?.mws_capabilities;
@@ -37,32 +46,43 @@
 		);
 	};
 
-	/** Aynı ailedeki modelleri (Qwen, Llama, …) seçicide tek başlık altında toplamak için sıralama anahtarı + etiket */
+	/**
+	 * Group models by capability category (from backend metadata) for the picker.
+	 * Uses structured mws_ui_category from the capability registry when available,
+	 * falls back to heuristic ID matching.
+	 */
 	const inferModelFamily = (
 		model: Record<string, unknown>
 	): { key: string; label: string } => {
+		const id = String(model?.id ?? '').toLowerCase();
+
+		// Auto sentinel always first
+		if (id === 'auto' || id === 'mws:auto') return { key: '0-auto', label: 'Auto' };
+
+		// Use structured category from backend capability registry
+		const catSort = model?.info?.meta?.mws_ui_category_sort;
+		const catLabel = model?.info?.meta?.mws_ui_category_label;
+		if (typeof catSort === 'string' && typeof catLabel === 'string' && catLabel.length) {
+			return { key: `${catSort}-${catLabel.toLowerCase().replace(/[\s\/]+/g, '-')}`, label: catLabel };
+		}
+
+		// Legacy mws_model_family override
 		const metaFam = model?.info?.meta?.mws_model_family;
 		if (typeof metaFam === 'string' && metaFam.trim()) {
 			const k = metaFam.trim().toLowerCase().replace(/\s+/g, '-');
 			return { key: `meta-${k}`, label: metaFam.trim() };
 		}
-		const id = String(model?.id ?? '').toLowerCase();
-		if (id === 'auto' || id === 'mws:auto') return { key: '0-auto', label: 'Auto' };
-		if (id.includes('qwen') || id.includes('qwq')) return { key: '1-qwen', label: 'Qwen' };
-		if (id.includes('llama')) return { key: '2-llama', label: 'Llama' };
-		if (id.includes('gemma')) return { key: '3-gemma', label: 'Gemma' };
-		if (id.includes('deepseek')) return { key: '4-deepseek', label: 'DeepSeek' };
-		if (id.includes('gpt-oss')) return { key: '5-gpt-oss', label: 'GPT-OSS' };
-		if (id.includes('whisper')) return { key: '6-whisper', label: 'Whisper' };
-		if (id.includes('bge') || id.includes('embedding')) return { key: '7-embedding', label: 'Embedding' };
-		if (id.includes('qwen-image') || id.includes('flux') || id === 'dall-e' || id.includes('dall-e'))
-			return { key: '8-image', label: 'Image' };
-		if (id.includes('kimi')) return { key: '9-kimi', label: 'Kimi' };
-		if (id.includes('glm')) return { key: '10-glm', label: 'GLM' };
-		if (id.includes('cotype') || id.includes('moondream') || id.includes('llava'))
-			return { key: '11-vision', label: 'Vision' };
-		if (id.includes('mws-gpt') || id.includes('t-pro')) return { key: '12-mws', label: 'MWS' };
-		return { key: '99-other', label: 'Diğer' };
+
+		// Heuristic fallback for models not in the capability registry
+		if (id.includes('whisper') || id.includes('audio')) return { key: '6-audio', label: 'Audio / ASR' };
+		if (id.includes('bge') || id.includes('embedding')) return { key: '9-embedding', label: 'Embedding' };
+		if (id.includes('qwen-image') || id.includes('flux') || id.includes('dall-e') || id.includes('stable-diffusion'))
+			return { key: '5-image-generation', label: 'Image Generation' };
+		if (id.includes('-vl') || id.includes('vision') || id.includes('llava') || id.includes('cotype'))
+			return { key: '4-vision', label: 'Vision' };
+		if (id.includes('coder')) return { key: '3-code', label: 'Code' };
+		if (id.includes('deepseek-r1') || id.includes('qwq')) return { key: '1-reasoning', label: 'Reasoning' };
+		return { key: '2-text', label: 'Text / Chat' };
 	};
 
 	const saveDefaultModel = async () => {
@@ -110,7 +130,6 @@
 						id={`${selectedModelIdx}`}
 						placeholder={$i18n.t('Select a model')}
 						items={$models
-							.filter((model) => !(model?.info?.meta?.mws_embedding_only === true))
 							.map((model) => {
 								const fam = inferModelFamily(model);
 								return {

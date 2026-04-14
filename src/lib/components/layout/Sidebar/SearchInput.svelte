@@ -287,7 +287,7 @@
 		{#if showClearButton && value}
 			<div class="self-center pl-1.5 translate-y-[0.5px] rounded-l-xl bg-transparent">
 				<button
-					class="p-0.5 rounded-full hover:bg-gray-100 dark:hover:bg-gray-900 transition"
+					class="p-0.5 rounded-full hover:bg-gray-100 dark:hover:bg-neutral-800 transition"
 					on:click={clearSearchInput}
 				>
 					<XMark className="size-3" strokeWidth="2" />
@@ -299,7 +299,7 @@
 	{#if focused && (filteredOptions.length > 0 || filteredItems.length > 0)}
 		<!-- svelte-ignore a11y-no-static-element-interactions -->
 		<div
-			class="absolute top-0 mt-8 left-0 right-1 border border-gray-100 dark:border-gray-900 bg-gray-50 dark:bg-gray-950 rounded-2xl z-10 shadow-lg"
+			class="absolute top-0 mt-8 left-0 right-1 border border-gray-100 dark:border-neutral-800 bg-gray-50 dark:bg-neutral-900 rounded-2xl z-10 shadow-lg"
 			id="search-options-container"
 			in:fade={{ duration: 50 }}
 			on:mouseenter={() => {
@@ -320,9 +320,9 @@
 					<div class="max-h-60 overflow-auto">
 						{#each filteredItems as item, itemIdx}
 							<button
-								class=" px-1.5 py-0.5 flex gap-1 hover:bg-gray-100 dark:hover:bg-gray-900 w-full rounded {selectedIdx ===
+								class=" px-1.5 py-0.5 flex gap-1 hover:bg-gray-100 dark:hover:bg-neutral-800 w-full rounded {selectedIdx ===
 								itemIdx
-									? 'bg-gray-100 dark:bg-gray-900'
+									? 'bg-gray-100 dark:bg-neutral-800'
 									: ''}"
 								data-selected={selectedIdx === itemIdx}
 								id="search-item-{itemIdx}"
@@ -356,9 +356,9 @@
 					<div class=" max-h-60 overflow-auto">
 						{#each filteredOptions as option, optionIdx}
 							<button
-								class=" px-1.5 py-0.5 flex gap-1 hover:bg-gray-100 dark:hover:bg-gray-900 w-full rounded {selectedIdx ===
+								class=" px-1.5 py-0.5 flex gap-1 hover:bg-gray-100 dark:hover:bg-neutral-800 w-full rounded {selectedIdx ===
 								optionIdx
-									? 'bg-gray-100 dark:bg-gray-900'
+									? 'bg-gray-100 dark:bg-neutral-800'
 									: ''}"
 								id="search-option-{optionIdx}"
 								on:click|stopPropagation={async () => {

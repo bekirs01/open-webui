@@ -251,10 +251,18 @@ def detect_reply_language_profile(text: str | None) -> ReplyLanguageProfile:
         if kana_n >= 2:
             return ReplyLanguageProfile('ja', 'Japanese', 'japanese')
 
+    # Dominant Cyrillic → Russian (etc.): must run before TR/EN heuristics so we never
+    # mis-label RU as Turkish/Latin and then strip all Cyrillic from the assistant reply.
+    if dom == 'cyrillic':
+        return ReplyLanguageProfile('ru', 'Russian', 'cyrillic')
+
     # --- Cyrillic (Russian, Ukrainian, Bulgarian, …) ------------------------------
     cyr = sum(1 for c in letters if _CYRILLIC.match(c))
     cyr_ratio = cyr / max(letter_n, 1)
     if cyr >= 2 and (cyr_ratio >= 0.18 or (letter_n <= 24 and cyr_ratio >= 0.12)):
+        return ReplyLanguageProfile('ru', 'Russian', 'cyrillic')
+    # Very short Cyrillic-only prompts (e.g. «да», «нет»)
+    if cyr >= 1 and letter_n <= 12 and cyr_ratio >= 0.35:
         return ReplyLanguageProfile('ru', 'Russian', 'cyrillic')
 
     lat = sum(1 for c in letters if 'a' <= c.lower() <= 'z')
@@ -324,25 +332,29 @@ def build_output_language_system_instruction(last_user_text: str | None) -> str:
 
     bodies: dict[ReplyLang, str] = {
         'ru': (
-            'Отвечай полностью на русском языке. Основной связный текст — на кириллице; латиницу используй только там, '
-            'где она уместна по смыслу: URL, фрагменты кода, международные обозначения, привычные написания имён собственных '
-            'и аббревиатур. Не вставляй в обычный текст символы из «чужих» систем письма (китайская, японская, корейская, '
-            'арабская, иврит, тайская и т. п.), если это не часть цитируемого кода или адреса. Не копируй дословно длинные '
-            'фрагменты с иностранных сайтов — перескажи, адаптируй и сформулируй по-русски. Не порождай бессмысленные '
-            'последовательности символов, «ломаную» кириллицу и подобие mojibake. Соблюдай единый стиль: один язык и одна '
-            'основная система письма для связного ответа.\n'
-            'English: Reply entirely in Russian (Cyrillic for prose). Latin only for URLs, code, or conventional Latin '
-            'proper names. No unrelated scripts in running text. Paraphrase sources; avoid mixed-script clutter.'
+            'ОБЯЗАТЕЛЬНОЕ ПРАВИЛО: Отвечай полностью на русском языке. Основной связный текст — на кириллице; '
+            'латиницу используй только для URL, кода, международных обозначений и привычных латинских написаний имён собственных.\n'
+            'АБСОЛЮТНЫЙ ЗАПРЕТ (ни одного символа из этих систем письма в обычном тексте): '
+            'китайские иероглифы, японская хирагана/катакана, корейский хангыль, арабская вязь, '
+            'иврит, тайское письмо, деванагари или любая другая чужая система письма. '
+            'Это правило без исключений — кроме кодовых блоков и URL.\n'
+            'Не копируй дословно длинные фрагменты с иностранных сайтов — перескажи и адаптируй по-русски. '
+            'Не порождай бессмысленные последовательности символов или mojibake. '
+            'Один язык и одна основная система письма для всего ответа.\n'
+            'English: Reply entirely in Russian (Cyrillic for prose). ZERO characters from CJK, Arabic, Hebrew, Thai, '
+            'Devanagari or any other unrelated script in running text. Latin only for URLs, code, conventional proper names.'
         ),
         'tr': (
+            'MUTLAK KURAL: Yanıtın tamamını Türkçe yaz. Yalnızca Latin tabanlı Türkçe harfleri (a-z, ç, ğ, ı, ö, ş, ü, İ), '
+            'rakamlar ve normal noktalama kullan.\n'
+            'KESİNLİKLE YASAK olan alfabeler/yazı sistemleri (bunlardan TEK BİR KARAKTER BİLE kullanma): '
+            'Çince karakterler, Japonca hiragana/katakana, Korece hangul, Arapça harfler, '
+            'Kiril/Rusça harfler, İbranice, Tay, Hintçe devnagari veya herhangi başka bir alfabe. '
+            'Bu kural istisnasızdır. Kod blokları ve URL’ler hariç hiçbir yerde yabancı alfabe görünmemeli.\n'
             'Kullanıcının son mesajında geçen kişi adları, yer adları, markalar ve özel yazımlar, kullanıcının yazdığı '
-            'Türkçe harflerle AYNEN korunmalıdır (ç, ğ, ı, ö, ş, ü ve büyük İ; harfleri ASCII karşılıklarına indirgeme, '
-            'sessizce değiştirme veya web’de gördüğün başka bir ünlünün yazımıyla ikame etme). Web araması farklı bir yazım '
-            'veya başka bir kişiyi gösteriyorsa bunu kısaca belirt; yine de kullanıcının yazdığı metni referans al. '
-            'Yanıtın tamamını Türkçe yaz; yalnızca Latin tabanlı Türkçe harfleri, rakamlar ve normal noktalama kullan. '
-            'Çince, Japonca, Korece, Arapça, Kiril veya başka alfabelerden karakterleri gövde metne ekleme. Kaynak metinleri '
-            'aynen yapıştırma; gerekiyorsa Türkçeye çevirerek veya özetleyerek aktar. Tek dil, tutarlı yazım; anlamsız Unicode '
-            'veya mojibake üretme.'
+            'Türkçe harflerle AYNEN korunmalıdır. Web araması farklı yazım gösteriyorsa kısaca belirt ama kullanıcının '
+            'yazdığı metni referans al. Kaynak metinleri aynen yapıştırma; Türkçeye çevirerek veya özetleyerek aktar. '
+            'Tek dil, tutarlı yazım; anlamsız Unicode veya mojibake üretme.'
         ),
         'en': (
             'Write the entire reply in English only—do not answer in Turkish or any other language for the main text '
@@ -436,11 +448,14 @@ def build_output_language_system_instruction(last_user_text: str | None) -> str:
     body = bodies.get(prof.code, bodies['other'])
 
     global_rule = (
-        '**Rule #1:** The entire reply must be in the **same natural language** as the user’s latest message—the language '
-        'they actually wrote in. If that message is **English**, write **only in English** (no Turkish or other language '
-        'in the main answer). Do **not** switch to the app/UI language, the model’s default locale, or the language of '
-        'web search / RAG snippets unless that language matches the user’s message. Infer language only from the user’s '
-        'words and script; retrieved context in another language must be translated or summarized into the user’s language.'
+        '**Rule #1 (CRITICAL):** The entire reply must be in the **same natural language and same writing system/alphabet** '
+        'as the user’s latest message. If the user wrote in Turkish, reply ONLY in Turkish with Latin-based Turkish letters. '
+        'If in English, reply ONLY in English. If in Russian, reply ONLY in Russian with Cyrillic.\n'
+        '**Rule #2 (ZERO TOLERANCE):** NEVER insert characters from unrelated writing systems into ordinary text. '
+        'For example: no Chinese/Japanese/Korean characters in a Turkish or English reply. No Arabic script in a Russian reply. '
+        'No Cyrillic in a Turkish reply. This is absolute — not a single foreign-alphabet character in prose text.\n'
+        '**Rule #3:** Do NOT switch to the app/UI language, the model’s default locale, or the language of web search / '
+        'RAG snippets. Always translate retrieved content into the user’s language before including it.'
     )
 
     return (
@@ -646,7 +661,13 @@ def _strip_chars_for_profile(s: str, prof: ReplyLanguageProfile) -> str:
 
 def _sanitize_plain_segment(text: str, last_user_text: str | None) -> str:
     """Script-profile strip only (used when OUTPUT_LANGUAGE_SANITIZE is on)."""
+    if not last_user_text or not str(last_user_text).strip():
+        return text
     prof = detect_reply_language_profile(last_user_text)
+    # Unknown profile strips via latin_generic and deletes non-Latin scripts — catastrophic
+    # for RU/ZH/… if user text was not extracted correctly from the request.
+    if prof.code == 'other' and prof.script_hint == 'unknown':
+        return text
     return _strip_chars_for_profile(text, prof)
 
 

@@ -14,6 +14,7 @@ from typing import Any
 from open_webui.utils.workspace_system_prompt import (
     WORKSPACE_ASSISTANT_FULL_PROMPT,
     WORKSPACE_DEEP_MODE_ADDENDUM,
+    WORKSPACE_HUMAN_MODE_ADDENDUM,
     WORKSPACE_POLICY_MARKER,
     WORKSPACE_POLICY_MARKER_DEEP,
 )
@@ -26,7 +27,7 @@ MWS_POLICY_MARKER = '[MWS_ASSISTANT_POLICY_v1]'
 MWS_ASSISTANT_POLICY_TEXT = """\
 You are a capable assistant. Follow these rules strictly:
 - Use exactly ONE natural language for the entire reply, matching the user's latest message (Turkish / English / Russian / etc.). Never mix languages or scripts in one answer unless the user explicitly asked for bilingual output.
-- Never inject characters from writing systems the user did not use (e.g. Chinese, Japanese, Korean, Arabic, Hebrew, stray Cyrillic in a Turkish answer, or CJK in an English answer).
+- ABSOLUTE RULE — ZERO foreign-alphabet characters in prose: Never inject characters from writing systems the user did not use. For example: no Chinese/Japanese/Korean/Arabic/Hebrew/Cyrillic characters in a Turkish or English reply; no CJK or Latin in an Arabic reply. Not even a single character. Code blocks and URLs are the only exceptions.
 - When web or RAG context is in another language, paraphrase in the reply language — do not paste raw foreign snippets.
 - Preserve the user’s exact spelling for names and words they wrote with language-specific letters (e.g. Turkish ç ğ ı ö ş ü); do not replace them with a different famous person’s name from search results without explaining the mismatch.
 - Stay on topic: answer what the user asked; do not drift into unrelated topics.
@@ -43,16 +44,35 @@ You are a capable assistant. Follow these rules strictly:
 MWS_POLICY_MARKER_DEEP = '[MWS_ASSISTANT_POLICY_DEEP_v1]'
 
 MWS_ASSISTANT_POLICY_DEEP_TEXT = """\
-You are in Deep thinking mode. Follow these rules strictly:
-- Use exactly ONE natural language for the entire reply, matching the user's message. Never mix languages or scripts unless the user asked for bilingual output.
+You are in Deep Thinking mode. This means you must provide the HIGHEST QUALITY response possible. Follow these rules strictly:
+
+THINKING PROCESS:
+- Break down the problem into sub-problems before answering.
+- Consider multiple angles and perspectives before settling on an answer.
+- If the question is complex, think step-by-step and show your reasoning process.
+- Double-check your own reasoning for logical errors before presenting the final answer.
+- If you are uncertain about something, say so explicitly rather than guessing.
+
+ANSWER QUALITY:
 - Prioritize correctness and depth over brevity: research-style answers are welcome when the question needs it.
-- If the conversation includes retrieved web or document context (snippets, citations, RAG), ground your answer in that material; synthesize it in the user's language — do not paste untranslated multilingual blocks. When sources disagree, acknowledge uncertainty briefly.
+- Provide comprehensive, well-structured answers with clear sections and headings when appropriate.
+- Include relevant examples, analogies, or comparisons to make complex concepts accessible.
+- When applicable, present pros and cons, trade-offs, or alternative approaches.
+- Cite specific evidence from retrieved context when available.
+
+LANGUAGE AND FORMAT:
+- Use exactly ONE natural language for the entire reply, matching the user's message. Never mix languages or scripts unless the user asked for bilingual output.
+- ABSOLUTE RULE — ZERO foreign-alphabet characters in prose: no Chinese/Japanese/Korean/Arabic/Hebrew characters in a Turkish, English or Russian reply. No Cyrillic in a Turkish reply. Code blocks and URLs are the only exceptions.
+- If the conversation includes retrieved web or document context, ground your answer in that material; synthesize it in the user's language — do not paste untranslated multilingual blocks. When sources disagree, acknowledge uncertainty briefly.
 - Do not invent precise dates, statistics, or quotes; if context does not support a claim, say so.
-- Structure the answer clearly (sections, bullets) when it helps readability for complex topics.
+- Structure the answer clearly (sections, bullets, numbered lists) for readability.
 - Do not describe internal routing, model names, or orchestration.
 - Do not output random code or garbled text unless the user asked for code.
-- If the user asks to export or convert to PDF/PNG/JPG/etc., do not refuse when the server can perform that action; the system handles real file exports separately.
+- If the user asks to export or convert to PDF/PNG/JPG/etc., do not refuse when the server can perform that action.
 """
+
+
+WORKSPACE_POLICY_MARKER_HUMAN = '<!-- MWS_HUMAN_MODE_POLICY -->'
 
 
 def _workspace_prompt_enabled() -> bool:
@@ -67,6 +87,7 @@ def _policy_markers_in_content(content: str) -> bool:
         for m in (
             WORKSPACE_POLICY_MARKER,
             WORKSPACE_POLICY_MARKER_DEEP,
+            WORKSPACE_POLICY_MARKER_HUMAN,
             MWS_POLICY_MARKER,
             MWS_POLICY_MARKER_DEEP,
         )
@@ -142,6 +163,22 @@ def inject_mws_deep_quality_policy(messages: list[dict] | None) -> list[dict]:
     return [policy_msg, *cleaned]
 
 
+def inject_mws_human_mode_policy(messages: list[dict] | None) -> list[dict]:
+    """Prepend human-mode policy; replaces standard/deep policy if present."""
+    if not messages:
+        messages = []
+    for m in messages:
+        if m.get('role') != 'system':
+            continue
+        c = m.get('content')
+        if isinstance(c, str) and WORKSPACE_POLICY_MARKER_HUMAN in c:
+            return messages
+    cleaned = _strip_prior_mws_policy_messages(messages)
+    body = WORKSPACE_HUMAN_MODE_ADDENDUM.strip()
+    policy_msg = {'role': 'system', 'content': f'{WORKSPACE_POLICY_MARKER_HUMAN}\n{body}'}
+    return [policy_msg, *cleaned]
+
+
 def maybe_inject_mws_assistant_policy(request: Any, form_data: dict, model: dict) -> None:
     """If completion uses an MWS-tagged model, prepend assistant policy (idempotent)."""
     if (
@@ -180,7 +217,9 @@ def maybe_inject_mws_assistant_policy(request: Any, form_data: dict, model: dict
         tag = (getattr(cfg, 'MWS_GPT_TAG', None) or 'mws').strip() or 'mws'
         if not _is_mws_tagged_model(model, tag):
             return
-        if form_data.get('mws_deep_thinking'):
+        if form_data.get('_mws_human_mode'):
+            form_data['messages'] = inject_mws_human_mode_policy(form_data.get('messages') or [])
+        elif form_data.get('mws_deep_thinking'):
             form_data['messages'] = inject_mws_deep_quality_policy(form_data.get('messages') or [])
         else:
             form_data['messages'] = inject_mws_quality_policy(form_data.get('messages') or [])

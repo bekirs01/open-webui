@@ -249,10 +249,10 @@
 	const generateTitleHandler = async () => {
 		const content = note.data.content.md;
 		const DEFAULT_TITLE_GENERATION_PROMPT_TEMPLATE = `### Task:
-Generate a concise, 3-5 word title with an emoji summarizing the content in the content's primary language.
+Generate a concise, 3–5 word title summarizing the content — plain text only, no emojis — in the content's primary language.
 ### Guidelines:
 - The title should clearly represent the main theme or subject of the content.
-- Use emojis that enhance understanding of the topic, but avoid quotation marks or special formatting.
+- No emoji or pictograph; avoid quotation marks wrapping the whole title or special formatting.
 - Write the title in the content's primary language.
 - Prioritize accuracy over excessive creativity; keep it clear and simple.
 - Your entire response must consist solely of the JSON object, without any introductory or concluding text.
@@ -261,12 +261,12 @@ Generate a concise, 3-5 word title with an emoji summarizing the content in the 
 ### Output:
 JSON format: { "title": "your concise title here" }
 ### Examples:
-- { "title": "📉 Stock Market Trends" },
-- { "title": "🍪 Perfect Chocolate Chip Recipe" },
-- { "title": "Evolution of Music Streaming" },
-- { "title": "Remote Work Productivity Tips" },
-- { "title": "Artificial Intelligence in Healthcare" },
-- { "title": "🎮 Video Game Development Insights" }
+- { "title": "Stock market trends overview" },
+- { "title": "Chocolate chip cookie recipe" },
+- { "title": "Evolution of music streaming" },
+- { "title": "Remote work productivity tips" },
+- { "title": "Artificial intelligence in healthcare" },
+- { "title": "Video game development basics" }
 ### Content:
 <content>
 ${content}

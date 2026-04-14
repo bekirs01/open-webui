@@ -183,6 +183,12 @@ _IMAGE_PHRASES: tuple[str, ...] = (
     'draw me',
     'draw a ',
     'draw an ',
+    'fotoğraf çiz',
+    'fotoğraf üret',
+    'foto çiz',
+    'bana resim',
+    'bana bir resim',
+    'bir resim çiz',
     'paint me',
     'paint a ',
     'sketch a ',
@@ -210,9 +216,22 @@ def _wants_image_creation(message_text: str) -> bool:
     t = _normalize_tr_keyboard_typos(message_text or '')
     if not t.strip():
         return False
+    # Geçmişe atıf soruları (yeni çizim değil)
+    if re.search(r'\b(?:what|which)\s+(?:image|picture|photo)\b', t, re.I) and re.search(
+        r'\b(?:earlier|before|previous|last\s+time)\b', t, re.I
+    ):
+        return False
+    low = t.lower()
+    # Türkçe kısa çizim: "bana ucan at çiz" (ASCII), "uçan at çiz", "at çiz"
+    if re.search(
+        r'\b(?:uçan|ucan|uç|uc)\s+(?:at|kuş|kus)\s+(?:çiz|ciz)\b'
+        r'|\b(?:at|kuş|kus)\s+(?:çiz|ciz)\b'
+        r'|\bbana\s+(?:uçan|ucan)\s+at\b',
+        low,
+    ):
+        return True
     if _IMG_INTENT.search(t):
         return True
-    low = t.lower()
     pad = f' {low} '
     for ph in _IMAGE_PHRASES:
         if ph in pad or ph in low:
@@ -277,6 +296,23 @@ def wants_image_edit_pipeline_turn(message_text: str) -> bool:
     ):
         return False
 
+    # Yüksek benzerlik / referansla yeniden üret: ekteki fotoğrafa çok yakın çıktı (i2i, t2i değil)
+    if re.search(
+        r'(?:'
+        r'benzer\s+(?:bir\s+)?(?:şey|resim|görsel|foto|fotoğraf|versiyon|kopya|hal|tablo)\w*\s*(?:çiz|yap|üret|oluştur|draw|generate|make)|'
+        r'(?:çiz|draw|üret|yap|oluştur|generate|make).{0,55}(?:benzer|aynı|tıpkı|bunun\s+gibi|bu\s+foto|this\s+photo)|'
+        r'bu\s+(?:fotoğraf|foto|resim|görsel)(?:a|ı|e|u)?\s+(?:çok\s+)?benzer|'
+        r'bu\s+(?:fotoğraf|foto|resim|görsel).{0,40}(?:çiz|yap|üret|oluştur|draw|generate|make|istiyorum)|'
+        r'(?:fotoğrafı|görseli|resmi)\s+(?:gör(?:üp)?|baz\s*al(?:arak)?|referans).{0,35}(?:çiz|yap|üret|benzer|oluştur)|'
+        r'(?:aynısı|aynısından|aynı\s+şekilde|tıpkı\s+bunun\s+gibi|tıpkı\s+böyle|buna\s+göre)\s*(?:çiz|yap|üret|oluştur|istiyorum)?|'
+        r'\b(?:recreate|reproduce|remake|duplicate|match\s+this|same\s+as\s+this|look\s*like\s+this|'
+        r'copy\s+of\s+this|reference\s+photo|photo[\s-]*match|high[\s-]*fidelity|near[\s-]*identical)\b'
+        r')',
+        low,
+        re.I,
+    ):
+        return True
+
     # Strong multilingual edit / manipulation intent (paired with a source image by the caller)
     if re.search(
         r'\b(?:'
@@ -323,6 +359,10 @@ def wants_image_edit_pipeline_turn(message_text: str) -> bool:
         'buna takım',
         'bunu daha',
         'bu fotoğrafa',
+        'bu fotoğrafa benzer',
+        'buna benzer',
+        'benzer çiz',
+        'aynısından çiz',
         'bu resimde',
         'bu adama',
         'bu kadına',
@@ -383,10 +423,17 @@ def collect_attachment_kinds(
     kinds: set[str] = set()
     for f in files or []:
         ct = (f.get('content_type') or f.get('type') or '').lower()
-        if ct.startswith('image/'):
+        if ct.startswith('image/') or f.get('type') == 'image':
             kinds.add('image')
         elif ct.startswith('audio/') or ct in ('audio',):
             kinds.add('audio')
+        elif (
+            'pdf' in ct
+            or ct.startswith('application/pdf')
+            or ct in ('application/vnd.openxmlformats-officedocument.wordprocessingml.document',)
+            or f.get('type') in ('file', 'document')
+        ):
+            kinds.add('document')
     # Recent turns only (not full history): follow-up edits reference images from a few messages back.
     if messages:
         tail = messages[-16:] if len(messages) > 16 else messages
@@ -399,6 +446,12 @@ def collect_attachment_kinds(
                     kinds.add('image')
                 elif ct.startswith('audio/'):
                     kinds.add('audio')
+                elif (
+                    'pdf' in ct
+                    or ct.startswith('application/pdf')
+                    or f.get('type') in ('file', 'document')
+                ):
+                    kinds.add('document')
             c = m.get('content')
             if isinstance(c, list):
                 for p in c:
@@ -445,7 +498,7 @@ def wants_web_research_heavy_task(message_text: str) -> bool:
         return False
     low = t.lower()
 
-    # Direct link / official source / registration intent (TR + EN)
+    # Direct link / official source / registration intent (TR + EN + RU)
     if re.search(
         r'(?:'
         r'link\s*(?:ver|için|bul|atar\s*mısın|paylaş|gönder)|linki\s+ver|doğrudan\s+link|'
@@ -459,7 +512,14 @@ def wants_web_research_heavy_task(message_text: str) -> bool:
         r'son\s+durum|güncel\s+(?:bilgi|durum|veri|haber)|en\s+son\s+(?:bilgi|durum)|'
         r'(?:bugün|şu\s*an|şu\s+an|right\s*now)\b|up[\s-]?to[\s-]?date|latest\s+(?:status|news|info)|'
         r'(?:şu|bu)\s+kişinin\s+(?:sitesi|web\s*sitesi|resmi\s+sitesi)|'
-        r'find\s+(?:the\s+)?(?:official\s+)?website|official\s+URL'
+        r'find\s+(?:the\s+)?(?:official\s+)?website|official\s+URL|'
+        # Rusça
+        r'официальный\s+сайт|найди\s+сайт|ссылк[аеу]\s+(?:дай|скинь|найди)|'
+        r'актуальн\w+\s+информац|последн\w+\s+(?:новост|данн|информац)|'
+        r'проверь|уточни|найди\s+в\s+интернете|поищи\s+в\s+(?:интернете|сети)|'
+        r'загугли|погугли|'
+        r'где\s+(?:можно|найти|купить|скачать|посмотреть)|'
+        r'как\s+(?:зарегистрироваться|подать\s+заявку|записаться)'
         r')',
         low,
         re.I,
@@ -468,7 +528,7 @@ def wants_web_research_heavy_task(message_text: str) -> bool:
 
     # Loose keyword combos (avoid firing on every "site" mention)
     if re.search(
-        r'\b(?:kaynak|source)\b.{0,80}\b(?:göster|bul|iste|ver|cite|link)\b',
+        r'\b(?:kaynak|source|источник)\b.{0,80}\b(?:göster|bul|iste|ver|cite|link|покаж|найд|дай)\b',
         message_text or '',
         re.I,
     ):
@@ -533,15 +593,19 @@ def should_inject_web_search_for_message(
     if re.search(r'\bhour\b.+\b(in|at|for)\b', t_raw, re.I):
         return True
 
-    # Açık internet / güncellik / finans / hava
+    # Açık internet / güncellik / finans / hava — TR + EN + RU
     if any(
         k in t
         for k in (
+            # Türkçe
             'araştır',
             'araştırma',
             'internetten',
+            'internette',
+            'internet',
             "web'de",
             'web de',
+            'webde',
             'googla',
             'google',
             'kaynak bul',
@@ -560,11 +624,49 @@ def should_inject_web_search_for_message(
             'kur ',
             ' dolar ',
             ' euro ',
+            'bak ',
+            'bul ',
+            'ara ',
+            'arat',
+            # İngilizce
+            'search',
+            'look up',
+            'find out',
+            'browse',
+            'look for',
+            'search for',
+            'search the',
+            'search online',
+            'search on',
+            'on the internet',
+            'from the internet',
+            'latest news',
+            'current price',
+            'stock price',
+            # Rusça
+            'интернет',
+            'поиск',
+            'поищи',
+            'погугли',
+            'загугли',
+            'найди',
+            'ищи',
+            'в интернете',
+            'в сети',
+            'новости',
+            'актуальн',
+            'последни',
+            'свежи',
+            'курс ',
+            'погода',
+            'цена',
+            'биржа',
+            'валюта',
         )
     ):
         return True
     if re.search(
-        r'^\s*(kimdir|nedir|who is|what is the (latest|current)|when did|where is)\b',
+        r'^\s*(kimdir|nedir|who is|what is the (latest|current)|when did|where is|кто так|что так|когда)\b',
         t_raw,
         re.I,
     ):
@@ -574,15 +676,60 @@ def should_inject_web_search_for_message(
     return False
 
 
+_MEMORY_CONTEXT_PATTERN = re.compile(
+    r'(?:'
+    r'(?:benim|my)\s+(?:adım|ismim|name)|'
+    r'(?:daha\s+önce|demin|önceki|geçen|son|earlier|before|previous|last)\s+'
+    r'(?:ne|what|hangi|which|konuş|söyle|anlat|sor|yaptı|çizdi|yazdı|said|asked|drew|wrote|created|discussed)|'
+    r'(?:ne\s+(?:resim|görsel|resmi|image|picture))\s+(?:çizdin|yaptın|ürettin|oluşturdun|drew|created|generated)|'
+    r'(?:hatırlıyor\s+musun|remember|recall|do\s+you\s+remember)|'
+    r'(?:önceki|previous|earlier|last|son)\s+(?:sohbet|konuşma|chat|conversation|message|mesaj|cevap|answer)|'
+    r'(?:az\s+önce|just\s+now|demin)\s+(?:ne|what)|'
+    r'devam\s+et|continue\s+from|'
+    r'(?:sana|senden)\s+(?:ne\s+)?(?:sordum|istedim|söyledim)|'
+    r'(?:what|ne)\s+(?:did\s+)?(?:i|ben)\s+(?:ask|sor|say|söyle|request|iste)'
+    r')',
+    re.I,
+)
+
+_IMAGE_REFERENCE_NOT_CREATION = re.compile(
+    r'(?:'
+    r'(?:ne|hangi|which|what)\s+(?:resim|görsel|image|picture)|'
+    r'(?:resim|görsel|image|picture)\s+(?:çizdin|yaptın|gösterdin|drew|created|showed)|'
+    r'(?:önceki|demin|daha\s+önce|earlier|before|previous)\s+(?:resim|görsel|image|picture|çiz)'
+    r')',
+    re.I,
+)
+
+
+def _is_memory_or_context_question(text: str) -> bool:
+    """True when the user is asking about previous conversation, not requesting new generation."""
+    if not text:
+        return False
+    if _MEMORY_CONTEXT_PATTERN.search(text):
+        return True
+    if _IMAGE_REFERENCE_NOT_CREATION.search(text):
+        if not _wants_image_creation(text):
+            return True
+        # "demin ne resmi çizdin" has both patterns but is a reference question
+        if re.search(r'(?:ne|what|hangi).{0,30}(?:çizdin|drew|created|yaptın)', text, re.I):
+            return True
+    return False
+
+
 def classify_task_modality(
     *,
     message_text: str,
     attachments: set[str],
     input_mode: str | None,
     enable_image_edit: bool = False,
+    routing_text: str | None = None,
 ) -> tuple[Capability, str]:
     """
     Deterministic routing classification for **chat completions** (assistant text reply).
+
+    Layer 1: Hard deterministic rules (attachments, input mode, memory/context)
+    Layer 2: Intent keywords (image creation, code, export)
 
     STT for uploads runs in Open WebUI's file pipeline; it must not route the main chat
     request to Whisper. Whisper/speaches is not a chat model — Auto previously picked
@@ -591,7 +738,12 @@ def classify_task_modality(
     if input_mode and input_mode.lower() in ('voice', 'audio', 'call'):
         return 'text', 'input_mode_voice_or_audio'
 
-    t = _normalize_tr_keyboard_typos(message_text or '')
+    t = _normalize_tr_keyboard_typos(routing_text or message_text or '')
+
+    # LAYER 1A: Memory/context questions MUST go to text, NEVER image_generation
+    if _is_memory_or_context_question(t):
+        return 'text', 'memory_or_context_question'
+
     try:
         from open_webui.utils.mws_gpt.export_intent import resolve_export_intent
 
@@ -600,8 +752,12 @@ def classify_task_modality(
     except Exception:
         pass
 
+    # PDF / office docs — extraction + summarization uses text/reasoning models (not image gen)
+    if 'document' in attachments:
+        return 'text', 'document_attachment'
+
+    # LAYER 1B: Attachment-based routing
     if 'audio' in attachments:
-        # Transcript is (or will be) user message text; same as plain text chat for routing.
         if (message_text or '').strip():
             return 'text', 'audio_attachment_with_transcript'
         return 'text', 'audio_attachment_use_text_model'
@@ -614,34 +770,27 @@ def classify_task_modality(
                 return 'export', 'export_with_image_attachment'
         except Exception:
             pass
-        # Prefer image edit/generation routing when enabled — otherwise Auto picks a vision model and
-        # downstream image_edits may never run for attached-photo edit requests.
         if enable_image_edit and wants_image_edit_pipeline_turn(t):
             return 'image_generation', 'image_edit_intent_with_attachment'
         return 'vision', 'image_attachment'
-    # Önce görsel üretim: kod modeline düşmeden (ör. mesajda "python" geçse bile) çiz/üret niyeti yakalanır.
+
+    # LAYER 2: Intent-based classification (no attachments)
     if _wants_image_creation(t):
         return 'image_generation', 'image_creation_intent'
 
-    if _CODE_HINT.search(t) or '```' in t:
-        return 'code', 'code_heuristic_fence_or_syntax'
+    if '```' in t:
+        return 'code', 'code_heuristic_fence'
+    if _CODE_HINT.search(t) and len(t) > 30:
+        return 'code', 'code_heuristic_syntax'
     low = t.lower()
-    # Sadece dil adı (ör. "Python nedir") kod modeline gitmesin; aşağıdakiler programlama bağlamı taşır.
-    code_kw = (
+    _code_action_kw = (
         'write code',
+        'fix this code',
         'refactor',
         'unit test',
         'stack trace',
         'exception',
         'fix bug',
-        'typescript',
-        'javascript',
-        'java ',
-        'golang',
-        'rust',
-        'function ',
-        'class ',
-        'api ',
         'debug',
         'pull request',
         'write a function',
@@ -654,42 +803,60 @@ def classify_task_modality(
         'regex',
         'big o',
         'leetcode',
+        'kod yaz',
+        'kodu düzelt',
+        'fonksiyon yaz',
+        'hata düzelt',
+        'bug düzelt',
+        'kod oluştur',
     )
-    if any(k in low for k in code_kw):
+    if re.search(r'\b(?:bu\s+)?(?:python\s+|javascript\s+|typescript\s+)?kodu(?:nu)?\s+düzelt\b', low, re.I):
+        return 'code', 'code_fix_turkish'
+    if any(k in low for k in _code_action_kw):
         return 'code', 'code_intent_keywords'
+    _code_lang_with_action = re.compile(
+        r'\b(?:typescript|javascript|java|golang|rust|python|c\+\+|c#|swift|kotlin|ruby|php)\b'
+        r'.{0,60}'
+        r'\b(?:yaz|oluştur|write|create|build|implement|function|class|api|code|script|program|uygula)\b',
+        re.I,
+    )
+    if _code_lang_with_action.search(t):
+        return 'code', 'code_language_with_action'
 
-    if any(
-        k in low
-        for k in (
-            'create image',
-            'generate image',
-            'make a picture',
-            'make an image',
-            'görsel oluştur',
-            'fotoğraf üret',
-            'poster yap',
-            'logo yap',
-        )
-    ):
-        return 'image_generation', 'image_intent_phrase'
+    # Late image intent: only if NOT a memory/context question (double safety)
+    if not _is_memory_or_context_question(t):
+        if any(
+            k in low
+            for k in (
+                'create image',
+                'generate image',
+                'make a picture',
+                'make an image',
+                'görsel oluştur',
+                'fotoğraf üret',
+                'poster yap',
+                'logo yap',
+            )
+        ):
+            return 'image_generation', 'image_intent_phrase'
 
-    # TR/RU: kısa görsel komutları ("araba çiz", "кот нарисуй") — _wants_image_creation kaçırdıysa yedek
-    if any(
-        k in low
-        for k in (
-            'çiz',
-            'ciz',
-            'resim ',
-            ' resim',
-            'görsel',
-            'illüstrasyon',
-            'нарисуй',
-            'картинк',
-            'изображен',
-            'сгенерируй изображ',
-        )
-    ):
-        return 'image_generation', 'image_intent_multilingual'
+        # TR/RU: kısa görsel komutları — yalnızca belirgin üretim niyeti varsa
+        if any(
+            k in low
+            for k in (
+                'çiz',
+                'ciz',
+                'resim ',
+                ' resim',
+                'görsel',
+                'illüstrasyon',
+                'нарисуй',
+                'картинк',
+                'изображен',
+                'сгенерируй изображ',
+            )
+        ):
+            return 'image_generation', 'image_intent_multilingual'
 
     return 'text', 'default_text'
 
