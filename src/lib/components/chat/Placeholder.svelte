@@ -55,6 +55,7 @@
 	export let codeInterpreterEnabled = false;
 	export let webSearchEnabled = false;
 	export let deepThinkingEnabled = false;
+	export let humanModeEnabled = false;
 
 	export let onUpload: Function = (e) => {};
 	export let onSelect = (e) => {};
@@ -218,6 +219,7 @@
 					bind:codeInterpreterEnabled
 					bind:webSearchEnabled
 					bind:deepThinkingEnabled
+					bind:humanModeEnabled
 					bind:atSelectedModel
 					bind:showCommands
 					bind:dragged

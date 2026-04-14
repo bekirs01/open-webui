@@ -141,6 +141,7 @@
 	export let imageGenerationEnabled = false;
 	export let webSearchEnabled = false;
 	export let deepThinkingEnabled = false;
+	export let humanModeEnabled = false;
 	export let codeInterpreterEnabled = false;
 
 	export let pendingOAuthTools = [];
@@ -184,6 +185,7 @@
 		imageGenerationEnabled,
 		webSearchEnabled,
 		deepThinkingEnabled,
+		humanModeEnabled,
 		codeInterpreterEnabled
 	});
 
@@ -1895,6 +1897,7 @@
 											bind:imageGenerationEnabled
 											bind:codeInterpreterEnabled
 											bind:deepThinkingEnabled
+											bind:humanModeEnabled
 											closeOnOutsideClick={integrationsMenuCloseOnOutsideClick}
 											onShowValves={(e) => {
 												const { type, id } = e;
@@ -2073,6 +2076,25 @@
 														: 'bg-transparent text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 '}"
 												>
 													<LightBulb className="size-4" strokeWidth="1.75" />
+													<div class="hidden group-hover:block">
+														<XMark className="size-4" strokeWidth="1.75" />
+													</div>
+												</button>
+											</Tooltip>
+										{/if}
+
+										{#if humanModeEnabled}
+											<Tooltip content="Human Mode" placement="top">
+												<button
+													aria-label="Disable Human Mode"
+													on:click|preventDefault={() =>
+														(humanModeEnabled = !humanModeEnabled)}
+													type="button"
+													class="group p-[7px] flex gap-1.5 items-center text-sm rounded-full transition-colors duration-300 focus:outline-hidden max-w-full overflow-hidden text-emerald-600 dark:text-emerald-400 bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-400/10 dark:hover:bg-emerald-700/10 border border-emerald-200/40 dark:border-emerald-500/20"
+												>
+													<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="size-4">
+														<path d="M10 8a3 3 0 100-6 3 3 0 000 6zM3.465 14.493a1.23 1.23 0 00.41 1.412A9.957 9.957 0 0010 18c2.31 0 4.438-.784 6.131-2.1.43-.333.604-.903.408-1.41a7.002 7.002 0 00-13.074.003z" />
+													</svg>
 													<div class="hidden group-hover:block">
 														<XMark className="size-4" strokeWidth="1.75" />
 													</div>

@@ -258,5 +258,60 @@ class MemoriesTable:
             except Exception:
                 return False
 
+    def archive_stale_memories(
+        self,
+        user_id: str,
+        *,
+        stale_days: int = 90,
+        min_access_count: int = 1,
+        min_importance: float = 0.3,
+        db: Optional[Session] = None,
+    ) -> int:
+        """Archive memories that are old, rarely accessed, and low-importance."""
+        cutoff = int(time.time()) - (stale_days * 86400)
+        archived = 0
+        with get_db_context(db) as db:
+            try:
+                rows = (
+                    db.query(Memory)
+                    .filter_by(user_id=user_id)
+                    .filter(or_(Memory.status == 'active', Memory.status == None))
+                    .all()
+                )
+                for m in rows:
+                    ts = int(m.last_accessed_at or m.updated_at or m.created_at or 0)
+                    ac = int(m.access_count or 0)
+                    imp = float(m.importance_score or 0.5)
+                    if ts < cutoff and ac <= min_access_count and imp < min_importance:
+                        m.status = 'archived'
+                        m.updated_at = int(time.time())
+                        archived += 1
+                if archived:
+                    db.commit()
+            except Exception:
+                pass
+        return archived
+
+    def get_memory_stats(self, user_id: str, db: Optional[Session] = None) -> dict[str, Any]:
+        """Return summary stats for a user's memories."""
+        with get_db_context(db) as db:
+            try:
+                rows = db.query(Memory).filter_by(user_id=user_id).all()
+                total = len(rows)
+                active = sum(1 for r in rows if (r.status or 'active') == 'active')
+                archived = sum(1 for r in rows if r.status == 'archived')
+                cats: dict[str, int] = {}
+                for r in rows:
+                    c = r.category or 'custom'
+                    cats[c] = cats.get(c, 0) + 1
+                return {
+                    'total': total,
+                    'active': active,
+                    'archived': archived,
+                    'categories': cats,
+                }
+            except Exception:
+                return {'total': 0, 'active': 0, 'archived': 0, 'categories': {}}
+
 
 Memories = MemoriesTable()

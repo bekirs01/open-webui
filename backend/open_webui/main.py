@@ -1691,6 +1691,78 @@ async def embeddings(request: Request, form_data: dict, user=Depends(get_verifie
     return await generate_embeddings(request, form_data, user)
 
 
+def _friendly_model_refusal(model_id: str, cap: str, user_lang: str = '') -> StreamingResponse:
+    """Return a polite streaming message instead of a red error when a model can't handle the task."""
+    import json as _json
+    import uuid as _uuid
+
+    _CAP_NAMES_TR = {
+        'image_generation': 'görsel oluşturma',
+        'embedding': 'metin gömme (embedding)',
+        'audio_transcription': 'ses tanıma (transkripsiyon)',
+        'vision': 'görsel analiz',
+        'code': 'kod yazma',
+        'text': 'metin',
+    }
+    _CAP_NAMES_EN = {
+        'image_generation': 'image generation',
+        'embedding': 'text embedding',
+        'audio_transcription': 'audio transcription',
+        'vision': 'visual analysis',
+        'code': 'coding',
+        'text': 'text',
+    }
+
+    _TR_CHARS = set('çğıöşüÇĞİÖŞÜ')
+    txt = (user_lang or '').lower()
+    is_turkish = bool(_TR_CHARS & set(user_lang)) or any(k in txt for k in (
+        'merhaba', 'nasıl', 'nedir', 'lütfen', 'abi', 'bana', 'yap',
+        'söyle', 'anlat', 'istiyorum', 'yardım', 'teşekkür',
+    ))
+    cap_name = _CAP_NAMES_TR.get(cap, cap) if is_turkish else _CAP_NAMES_EN.get(cap, cap)
+
+    short_name = model_id.split('/')[-1] if '/' in model_id else model_id
+
+    if is_turkish:
+        msg = (
+            f"⚠️ **{short_name}** modeli yalnızca **{cap_name}** işlemleri için tasarlanmıştır "
+            f"ve genel sohbet sorularına cevap verememektedir.\n\n"
+            f"📌 **Ne yapmalısınız?**\n"
+            f"- Genel sorular için **MWS Auto** modelini seçin (otomatik olarak en uygun modeli kullanır)\n"
+            f"- Veya model seçiciden bir metin modeli seçin\n\n"
+            f"💡 *MWS Auto seçili olduğunda, sistem sorunuza göre otomatik olarak en uygun modeli seçer "
+            f"— ister metin, ister görsel, ister kod olsun.*"
+        )
+    else:
+        msg = (
+            f"⚠️ **{short_name}** is a **{cap_name}** model "
+            f"and cannot handle general chat requests.\n\n"
+            f"📌 **What to do:**\n"
+            f"- Select **MWS Auto** for general questions (it automatically picks the best model)\n"
+            f"- Or choose a text model from the model selector\n\n"
+            f"💡 *When MWS Auto is selected, the system automatically routes your request to the best model "
+            f"— whether it's text, image, or code.*"
+        )
+
+    chunk_id = f'chatcmpl-{_uuid.uuid4().hex[:12]}'
+    chunk = {
+        'id': chunk_id,
+        'object': 'chat.completion.chunk',
+        'created': int(time.time()),
+        'model': model_id,
+        'choices': [{'index': 0, 'delta': {'role': 'assistant', 'content': msg}, 'finish_reason': 'stop'}],
+    }
+    done_line = 'data: [DONE]\n\n'
+    body = f'data: {_json.dumps(chunk)}\n\n{done_line}'
+
+    async def _gen():
+        yield body
+
+    return StreamingResponse(_gen(), media_type='text/event-stream', headers={
+        'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no',
+    })
+
+
 @app.post('/api/chat/completions')
 @app.post('/api/v1/chat/completions')  # Experimental: Compatibility with OpenAI API
 async def chat_completion(
@@ -1738,7 +1810,8 @@ async def chat_completion(
                         detail=f'Model "{mid_req}" is not in the team allowlist.',
                     )
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        log.warning('[MWS] routing ValueError: %s', e)
+        return _friendly_model_refusal(mid_req or 'unknown', 'text', '')
 
     model_id = form_data.get('model', None)
     # MWS: Whisper/STT modelleri /chat/completions ile uyumlu değil; ses dosyası varsa metin modeline geç (görsel boru hattı gibi).
@@ -1763,6 +1836,20 @@ async def chat_completion(
                             rep,
                             form_data.get('_mws_whisper_selected_model_id'),
                         )
+                else:
+                    original_model = model_id
+                    form_data['model'] = 'auto'
+                    resolved_id, routing_meta = resolve_mws_chat_model(request, form_data)
+                    if resolved_id:
+                        form_data['model'] = resolved_id
+                        model_id = resolved_id
+                    else:
+                        form_data['model'] = original_model
+                    request.state.mws_routing = routing_meta
+                    log.info(
+                        '[MWS] %s model "%s" selected for chat; re-routed via Auto → %s',
+                        cap, original_model, model_id,
+                    )
 
             elif cap in ('image_generation', 'embedding'):
                 original_model = model_id
@@ -1784,7 +1871,14 @@ async def chat_completion(
     if is_mws_gpt_active(request.app.state.config) and model_id and get_primary_capability(model_id) is not None:
         ok, err = validate_chat_model_selection(model_id, form_data)
         if not ok:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=err)
+            cap = get_primary_capability(model_id) or 'unknown'
+            user_lang = ''
+            msgs = form_data.get('messages') or []
+            if msgs:
+                last_u = next((m for m in reversed(msgs) if m.get('role') == 'user'), None)
+                if last_u:
+                    user_lang = (last_u.get('content') or '')[:100]
+            return _friendly_model_refusal(model_id, cap, user_lang)
     model_item = form_data.pop('model_item', {})
     tasks = form_data.pop('background_tasks', None)
 

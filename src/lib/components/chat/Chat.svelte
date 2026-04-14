@@ -250,6 +250,7 @@
 	let imageGenerationEnabled = false;
 	let webSearchEnabled = false;
 	let deepThinkingEnabled = false;
+	let humanModeEnabled = false;
 	let codeInterpreterEnabled = false;
 
 	let showCommands = false;
@@ -289,6 +290,7 @@
 		selectedFilterIds = [];
 		webSearchEnabled = false;
 		deepThinkingEnabled = false;
+		humanModeEnabled = false;
 		imageGenerationEnabled = false;
 
 		const storageChatInput = sessionStorage.getItem(
@@ -320,6 +322,7 @@
 						selectedFilterIds = input.selectedFilterIds;
 						webSearchEnabled = input.webSearchEnabled;
 						deepThinkingEnabled = input.deepThinkingEnabled ?? false;
+						humanModeEnabled = input.humanModeEnabled ?? false;
 						imageGenerationEnabled = input.imageGenerationEnabled;
 						codeInterpreterEnabled = input.codeInterpreterEnabled;
 					}
@@ -382,6 +385,7 @@
 		pendingOAuthTools = [];
 		webSearchEnabled = false;
 		deepThinkingEnabled = false;
+		humanModeEnabled = false;
 		imageGenerationEnabled = false;
 		codeInterpreterEnabled = false;
 
@@ -845,6 +849,7 @@
 				selectedFilterIds = [];
 				webSearchEnabled = false;
 				deepThinkingEnabled = false;
+				humanModeEnabled = false;
 				imageGenerationEnabled = false;
 				codeInterpreterEnabled = false;
 
@@ -858,6 +863,7 @@
 						selectedFilterIds = input.selectedFilterIds;
 						webSearchEnabled = input.webSearchEnabled;
 						deepThinkingEnabled = input.deepThinkingEnabled ?? false;
+						humanModeEnabled = input.humanModeEnabled ?? false;
 						imageGenerationEnabled = input.imageGenerationEnabled;
 						codeInterpreterEnabled = input.codeInterpreterEnabled;
 					}
@@ -2444,6 +2450,7 @@
 					...params,
 					// Voice overlay: deep thinking adds latency; keep it for text chat only.
 					...(deepThinkingEnabled && !get(showCallOverlay) ? { mws_deep_thinking: true } : {}),
+					...(humanModeEnabled ? { mws_human_mode: true } : {}),
 					stop: getStopTokens()
 				},
 
@@ -3162,6 +3169,7 @@
 									{pendingOAuthTools}
 									bind:webSearchEnabled
 									bind:deepThinkingEnabled
+									bind:humanModeEnabled
 									bind:atSelectedModel
 									bind:showCommands
 									bind:dragged
@@ -3246,6 +3254,7 @@
 									bind:codeInterpreterEnabled
 									bind:webSearchEnabled
 									bind:deepThinkingEnabled
+									bind:humanModeEnabled
 									bind:atSelectedModel
 									bind:showCommands
 									bind:dragged

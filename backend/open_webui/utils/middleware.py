@@ -1475,24 +1475,51 @@ async def chat_memory_handler(request: Request, form_data: dict, extra_params: d
         log.debug(e)
         ranked = []
 
-    user_context = ''
-    for idx, mem in enumerate(ranked or []):
+    if not ranked:
+        return form_data
+
+    grouped: dict[str, list[str]] = {}
+    _CAT_LABELS = {
+        'preference': 'Preferences',
+        'profile': 'User Profile',
+        'project': 'Projects',
+        'task': 'Tasks',
+        'constraint': 'Constraints',
+        'communication_style': 'Communication Style',
+        'habit': 'Habits',
+        'ongoing_context': 'Current Context',
+        'lesson': 'Lessons Learned',
+        'entity': 'Important People/Things',
+        'custom': 'Other',
+    }
+    for mem in ranked:
         created_at_date = (
-            time.strftime('%Y-%m-%d', time.localtime(mem.created_at)) if mem.created_at else 'Unknown'
+            time.strftime('%Y-%m-%d', time.localtime(mem.created_at)) if mem.created_at else ''
         )
-        cat = (mem.category or 'general').replace('_', ' ')
-        user_context += f'{idx + 1}. [{created_at_date}] [{cat}] {mem.content}\n'
+        cat_key = mem.category or 'custom'
+        label = _CAT_LABELS.get(cat_key, cat_key.replace('_', ' ').title())
+        date_tag = f' ({created_at_date})' if created_at_date else ''
+        entry = f'- {mem.content}{date_tag}'
+        grouped.setdefault(label, []).append(entry)
         try:
             Memories.increment_access(mem.id, user.id)
         except Exception:
             pass
 
-    if not (user_context or '').strip():
+    lines: list[str] = []
+    for label, entries in grouped.items():
+        lines.append(f'**{label}:**')
+        lines.extend(entries)
+    user_context = '\n'.join(lines)
+
+    if not user_context.strip():
         return form_data
 
     form_data['messages'] = add_or_update_system_message(
-        'Relevant long-term memory (curated facts about the user):\n'
-        'Use when helpful; do not contradict without checking. Do not expose internal scores.\n\n'
+        'Long-term memory about this user (remembered from past conversations):\n'
+        'These are curated facts. Use them to personalize responses. '
+        'If the user provides NEW information that contradicts a memory, trust the user and adapt. '
+        'Never reveal memory scores or internal metadata.\n\n'
         f'{user_context}\n',
         form_data['messages'],
         append=True,
@@ -1546,6 +1573,7 @@ async def chat_imported_context_handler(request: Request, form_data: dict, extra
 
 async def chat_web_search_handler(request: Request, form_data: dict, extra_params: dict, user):
     event_emitter = extra_params['__event_emitter__']
+
     await event_emitter(
         {
             'type': 'status',
@@ -2147,49 +2175,73 @@ async def chat_image_generation_handler(request: Request, form_data: dict, extra
             except Exception:
                 pass
 
-            images = await image_generations(
-                request=request,
-                form_data=CreateImageForm(**img_form),
-                metadata={
-                    'chat_id': metadata.get('chat_id', None),
-                    'message_id': metadata.get('message_id', None),
-                },
-                user=user,
+            images = await asyncio.wait_for(
+                image_generations(
+                    request=request,
+                    form_data=CreateImageForm(**img_form),
+                    metadata={
+                        'chat_id': metadata.get('chat_id', None),
+                        'message_id': metadata.get('message_id', None),
+                    },
+                    user=user,
+                ),
+                timeout=180,
             )
 
+            valid_images = [img for img in (images or []) if img.get('url')]
+
+            if valid_images:
+                await __event_emitter__(
+                    {
+                        'type': 'status',
+                        'data': {'description': 'Image created', 'done': True},
+                    }
+                )
+
+                await __event_emitter__(
+                    {
+                        'type': 'files',
+                        'data': {
+                            'files': [
+                                {
+                                    'type': 'image',
+                                    'url': image['url'],
+                                    'content_type': image.get('content_type', 'image/png'),
+                                }
+                                for image in valid_images
+                            ]
+                        },
+                    }
+                )
+
+                if form_data.get('_mws_pure_draw_intent'):
+                    system_message_content = ''
+                    form_data['_mws_skip_text_completion'] = True
+                else:
+                    system_message_content = (
+                        '<context>The image is displayed above. Reply briefly in the same natural language as the user\'s '
+                        'last message (match Turkish, English, etc.). Do not mix languages, do not output code fragments '
+                        'or token soup.</context>'
+                    )
+            else:
+                raise Exception('Image generation returned empty result')
+
+        except asyncio.TimeoutError:
+            log.warning('[MWS] image generation timed out after 180s')
             await __event_emitter__(
                 {
                     'type': 'status',
-                    'data': {'description': 'Image created', 'done': True},
-                }
-            )
-
-            await __event_emitter__(
-                {
-                    'type': 'files',
                     'data': {
-                        'files': [
-                            {
-                                'type': 'image',
-                                'url': image['url'],
-                                'content_type': image.get('content_type', 'image/png'),
-                            }
-                            for image in images
-                            if image.get('url')
-                        ]
+                        'description': 'Image generation timed out — please try again',
+                        'done': True,
                     },
                 }
             )
+            system_message_content = (
+                '<context>Image generation timed out. Explain briefly in the same natural language as the user\'s '
+                'last message that the image took too long to generate and they should try again.</context>'
+            )
 
-            if form_data.get('_mws_pure_draw_intent'):
-                system_message_content = ''
-                form_data['_mws_skip_text_completion'] = True
-            else:
-                system_message_content = (
-                    '<context>The image is displayed above. Reply briefly in the same natural language as the user\'s '
-                    'last message (match Turkish, English, etc.). Do not mix languages, do not output code fragments '
-                    'or token soup.</context>'
-                )
         except Exception as e:
             log.warning('[MWS] image generation failed: %s', e, exc_info=True)
 
@@ -2510,6 +2562,18 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             metadata['selected_model_id'] = selected_model_id
 
     form_data = apply_params_to_form_data(form_data, model)
+
+    if form_data.get('mws_deep_thinking'):
+        if not form_data.get('reasoning_effort'):
+            form_data['reasoning_effort'] = 'high'
+        if form_data.get('temperature') is None or form_data.get('temperature', 1.0) > 0.6:
+            form_data['temperature'] = 0.6
+
+    if form_data.get('mws_human_mode'):
+        if form_data.get('temperature') is None or form_data.get('temperature', 0.7) < 0.85:
+            form_data['temperature'] = 0.85
+        form_data['_mws_human_mode'] = True
+
     log.debug(f'form_data: {form_data}')
 
     # Son kullanıcı turundaki yüklemeler (DB ile üzerine yazılmadan önce); çoklu görsel→PDF/ZIP export için gerekli.
@@ -2936,6 +3000,18 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                     template,
                     form_data['messages'],
                 )
+
+        if _deep and extra_params.get('__event_emitter__'):
+            await extra_params['__event_emitter__'](
+                {
+                    'type': 'status',
+                    'data': {
+                        'action': 'deep_thinking',
+                        'description': 'Deep thinking mode active',
+                        'done': False,
+                    },
+                }
+            )
 
         # Long-term memory + cross-chat snapshot injection (skip when native FC / pure draw)
         if metadata.get('params', {}).get('function_calling') != 'native' and not form_data.get(

@@ -598,6 +598,7 @@ async def image_generations(
                 url=url,
                 json=data,
                 headers=headers,
+                timeout=120,
             )
 
             r.raise_for_status()

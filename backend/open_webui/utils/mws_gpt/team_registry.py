@@ -582,13 +582,7 @@ def validate_chat_model_selection(model_id: str, form_data: dict[str, Any]) -> t
     if cap is None:
         return True, None
     if cap == 'embedding':
-        return False, (
-            'This model is for embeddings only, not chat. Pick a text model or Auto.'
-        )
+        return False, 'embedding'
     if cap == 'audio_transcription':
-        # Whisper is for /audio/transcriptions (STT), not chat/completions — even with audio attached.
-        return (
-            False,
-            'Whisper/STT models are not for chat. Use Auto or a text model; uploaded audio is transcribed automatically.',
-        )
+        return False, 'audio_transcription'
     return True, None

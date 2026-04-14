@@ -11,20 +11,40 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 _EXTRACTION_SYSTEM = """You are a careful memory curator for a personal AI assistant.
-Decide if the latest user+assistant exchange contains ONE durable, user-specific fact worth remembering across future chats.
+Analyze the latest user+assistant exchange and extract up to TWO durable, user-specific facts worth remembering across future chats.
 
-Output ONLY valid JSON with keys:
+Output ONLY valid JSON: an object with a "memories" array. Each element has:
 - "save": boolean
-- "category": one of: preference, profile, project, task, constraint, communication_style, habit, ongoing_context, custom
+- "category": one of: preference, profile, project, task, constraint, communication_style, habit, ongoing_context, lesson, entity, custom
 - "content": string, one concise third-person sentence (max 200 chars), or empty if save is false
 - "confidence": number 0.0-1.0
 - "importance": number 0.0-1.0
+- "supersedes": string or null — if this fact UPDATES or CONTRADICTS a previously known fact, describe what it replaces (e.g. "User's age was 25, now 26"). null if new.
 - "reason": short string why save or not
 
+If only one fact, return a single-element array. If nothing worth saving, return {"memories": [{"save": false, "reason": "..."}]}.
+
+Category guide:
+- preference: likes, dislikes, favorites, settings choices
+- profile: name, age, location, job, education, personal details
+- project: ongoing work, goals, deadlines
+- task: recurring tasks, routines
+- constraint: limits, requirements, things to avoid
+- communication_style: language preference, tone, formality level
+- habit: daily routines, behavioral patterns
+- ongoing_context: current situation, temporary but multi-session context
+- lesson: insight from experience (what worked/didn't work, user feedback on past responses)
+- entity: important people, organizations, tools the user mentions repeatedly
+- custom: anything else worth remembering
+
 Rules:
-- Save stable preferences, long-running projects, communication style, recurring goals, important constraints.
+- Save stable preferences, long-running projects, communication style, recurring goals, important constraints, lessons from experience.
+- Save names, relationships, and entities the user mentions as personally important.
+- If the user CORRECTS the assistant or gives feedback about a past response, save it as a lesson.
+- If the user shares updated info that contradicts an earlier fact, mark supersedes accordingly.
 - Do NOT save one-off requests, chit-chat, ephemeral info, or anything only useful once.
-- Do NOT save secrets, passwords, API keys, payment or government ID data (refuse save=true for those).
+- Do NOT save secrets, passwords, API keys, payment or government ID data.
+- Respond in the SAME LANGUAGE as the user's message when writing the content field.
 - If unsure, set save=false.
 """
 
@@ -74,6 +94,17 @@ def _parse_json_block(raw: str) -> dict[str, Any] | None:
     return None
 
 
+def _parse_memories_response(data: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Normalize LLM response: supports both single-object and {memories: [...]} formats."""
+    if not isinstance(data, dict):
+        return []
+    if 'memories' in data and isinstance(data['memories'], list):
+        return [m for m in data['memories'] if isinstance(m, dict)]
+    if 'save' in data:
+        return [data]
+    return []
+
+
 async def llm_extract_memory_candidate(
     request: Any,
     user: Any,
@@ -81,8 +112,8 @@ async def llm_extract_memory_candidate(
     user_message: str,
     assistant_message: str,
     task_model_id: str,
-) -> dict[str, Any] | None:
-    """Returns validated extraction dict or None on skip/failure."""
+) -> list[dict[str, Any]]:
+    """Returns list of validated extraction dicts (may be empty)."""
     from open_webui.routers.pipelines import process_pipeline_inlet_filter
     from open_webui.utils.chat import generate_chat_completion
     from open_webui.utils.task import get_task_model_id
@@ -117,9 +148,9 @@ async def llm_extract_memory_candidate(
     }
     mt = models.get(task_model_id) or {}
     if mt.get('owned_by') == 'ollama':
-        payload['max_tokens'] = min(600, mt.get('info', {}).get('params', {}).get('max_tokens', 600))
+        payload['max_tokens'] = min(800, mt.get('info', {}).get('params', {}).get('max_tokens', 800))
     else:
-        payload['max_completion_tokens'] = 600
+        payload['max_completion_tokens'] = 800
 
     try:
         payload = await process_pipeline_inlet_filter(request, payload, user, models)
@@ -130,10 +161,10 @@ async def llm_extract_memory_candidate(
         res = await generate_chat_completion(request, form_data=payload, user=user)
     except Exception as e:
         log.warning('ltm extraction LLM failed: %s', e)
-        return None
+        return []
 
     if not isinstance(res, dict):
-        return None
+        return []
 
     text = ''
     choices = res.get('choices') or []
@@ -141,9 +172,7 @@ async def llm_extract_memory_candidate(
         msg = choices[0].get('message') or {}
         text = msg.get('content') or ''
     if not text:
-        return None
+        return []
 
     data = _parse_json_block(text)
-    if not isinstance(data, dict):
-        return None
-    return data
+    return _parse_memories_response(data)
