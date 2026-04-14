@@ -63,6 +63,23 @@ def _done_message(lang: str) -> str:
     return 'Your PowerPoint presentation (PPTX) is attached — open or download the file below.'
 
 
+def _build_error_message(lang: str) -> str:
+    if lang == 'ru':
+        return (
+            'Не удалось собрать презентацию (ошибка при сборке или загрузке файла). '
+            'Попробуйте снова или укажите меньше слайдов.'
+        )
+    if lang == 'tr':
+        return (
+            'Sunum oluşturulamadı (derleme veya dosya yükleme hatası). '
+            'Daha az slayt ile tekrar deneyin.'
+        )
+    return (
+        'Could not build the presentation (build or upload failed). '
+        'Try again or ask for fewer slides.'
+    )
+
+
 def _extract_json_object(text: str) -> dict[str, Any] | None:
     if not text:
         return None
@@ -392,7 +409,7 @@ async def try_mws_presentation_pipeline(
                 # Slide images are embedded into PPTX only. Do NOT pass chat_id/message_id here:
                 # upload_image() attaches to the assistant message whenever both are set, which made
                 # the UI show raw generated images instead of a single .pptx.
-                img_meta: dict[str, Any] = {}
+                img_meta: dict[str, Any] = {'mws_skip_message_image_attach': True}
                 _sz = (os.environ.get('MWS_PRESENTATION_IMAGE_SIZE') or '1024x1024').strip()
                 np = get_default_image_negative_prompt()
                 cf: dict[str, Any] = {'prompt': ip, 'n': 1}
@@ -449,33 +466,39 @@ async def try_mws_presentation_pipeline(
             except Exception as e:
                 log.debug('[MWS] presentation insert_chat_files: %s', e)
 
-            url = str(request.app.url_path_for('get_file_content_by_id', id=file_item.id))
             lang = _guess_lang_reply(user_text)
+            from open_webui.utils.mws_gpt.export_pipeline import _export_file_attachment_record
+
+            ct = 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+            entry = _export_file_attachment_record(file_item, pptx_bytes, fname, ct)
+            form_data['_mws_export_result_files'] = [entry]
 
             if emitter:
                 await emitter({'type': 'status', 'data': {'description': 'Done', 'done': True}})
-                await emitter(
-                    {
-                        'type': 'files',
-                        'data': {
-                            'files': [
-                                {
-                                    'type': 'file',
-                                    'id': file_item.id,
-                                    'url': url,
-                                    'name': fname,
-                                    'content_type': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-                                }
-                            ]
-                        },
-                    }
-                )
+                await emitter({'type': 'files', 'data': {'files': [entry]}})
 
             form_data['_mws_export_completion'] = True
             form_data['_mws_export_assistant_content'] = _done_message(lang)
             form_data['features'] = {}
             return form_data
 
+        except Exception as e:
+            log.warning('[MWS] presentation build/upload failed: %s', e)
+            lang = _guess_lang_reply(user_text)
+            if emitter:
+                try:
+                    await emitter(
+                        {
+                            'type': 'status',
+                            'data': {'description': 'Presentation failed', 'done': True},
+                        }
+                    )
+                except Exception:
+                    pass
+            form_data['_mws_export_completion'] = True
+            form_data['_mws_export_assistant_content'] = _build_error_message(lang)
+            form_data['features'] = {}
+            return form_data
         finally:
             try:
                 cfg.IMAGE_GENERATION_MODEL = prev_img_model
