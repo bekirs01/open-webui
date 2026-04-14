@@ -718,6 +718,20 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             log.warning(f'Failed to initialize tool/terminal servers at startup: {e}')
 
+    try:
+        from open_webui.utils.default_workspace_library import seed_default_workspace_library
+
+        seed_default_workspace_library()
+    except Exception as e:
+        log.warning(f'Default workspace library seed skipped: {e}')
+
+    try:
+        from open_webui.utils.default_memory_tool import seed_default_memory_tool
+
+        seed_default_memory_tool()
+    except Exception as e:
+        log.warning(f'Default memory tool seed skipped: {e}')
+
     # Mark application as ready to accept traffic from a startup perspective.
     app.state.startup_complete = True
 

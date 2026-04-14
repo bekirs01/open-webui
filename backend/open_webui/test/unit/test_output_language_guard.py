@@ -49,31 +49,36 @@ def test_detect_french_latin_generic():
     assert p.code == 'latin_generic'
 
 
-def test_chinese_user_keeps_cjk_in_sanitize():
+def test_chinese_user_keeps_cjk_in_sanitize(monkeypatch):
+    monkeypatch.setenv('OUTPUT_LANGUAGE_SANITIZE', 'true')
     t = '价格明日元'
     assert sanitize_leaked_scripts(t, '今天天气怎么样') == t
 
 
-def test_chinese_user_strips_cyrillic_leak():
+def test_chinese_user_strips_cyrillic_leak(monkeypatch):
+    monkeypatch.setenv('OUTPUT_LANGUAGE_SANITIZE', 'true')
     clean = sanitize_leaked_scripts('价格Кирилл', '你好')
     assert 'К' not in clean
 
 
-def test_sanitize_strips_cjk_for_turkish():
+def test_sanitize_strips_cjk_for_turkish(monkeypatch):
+    monkeypatch.setenv('OUTPUT_LANGUAGE_SANITIZE', 'true')
     dirty = 'Bugün 明 kuru 92.'
     clean = sanitize_leaked_scripts(dirty, 'test için')
     assert '明' not in clean
     assert '92' in clean
 
 
-def test_sanitize_preserves_code_fence():
+def test_sanitize_preserves_code_fence(monkeypatch):
+    monkeypatch.setenv('OUTPUT_LANGUAGE_SANITIZE', 'true')
     s = 'Metin 明\n```\n明code\n```\nSon 明'
     clean = sanitize_leaked_scripts(s, 'dolar için')
     assert '明' not in clean.split('```')[0]
     assert '明code' in clean
 
 
-def test_sanitize_or_aligned_mutates_message_text():
+def test_sanitize_or_aligned_mutates_message_text(monkeypatch):
+    monkeypatch.setenv('OUTPUT_LANGUAGE_SANITIZE', 'true')
     out = [
         {
             'type': 'message',
@@ -93,7 +98,8 @@ def test_sanitize_skips_when_disabled(monkeypatch):
 
 
 def test_sanitize_strips_token_soup_paragraph(monkeypatch):
-    monkeypatch.delenv('OUTPUT_TOKEN_SOUP_STRIP', raising=False)
+    monkeypatch.setenv('OUTPUT_TOKEN_SOUP_STRIP', 'true')
+    monkeypatch.setenv('OUTPUT_LANGUAGE_SANITIZE', 'false')
     good = (
         'Bekir Suçıkaran hakkında yaklaşık 235 bin abone olduğu söyleniyor. '
         'Kesin sayı için YouTube kanal sayfasına bakın.'

@@ -450,12 +450,16 @@ def build_output_language_system_instruction(last_user_text: str | None) -> str:
     global_rule = (
         '**Rule #1 (CRITICAL):** The entire reply must be in the **same natural language and same writing system/alphabet** '
         'as the user’s latest message. If the user wrote in Turkish, reply ONLY in Turkish with Latin-based Turkish letters. '
-        'If in English, reply ONLY in English. If in Russian, reply ONLY in Russian with Cyrillic.\n'
+        'If in English, reply ONLY in English. If in Russian, reply ONLY in Russian with Cyrillic. If in Arabic, reply ONLY '
+        'in Arabic with Arabic script.\n'
         '**Rule #2 (ZERO TOLERANCE):** NEVER insert characters from unrelated writing systems into ordinary text. '
-        'For example: no Chinese/Japanese/Korean characters in a Turkish or English reply. No Arabic script in a Russian reply. '
-        'No Cyrillic in a Turkish reply. This is absolute — not a single foreign-alphabet character in prose text.\n'
+        'For example: no Chinese/Japanese/Korean characters in a Turkish or English reply. No Arabic script in a Russian reply '
+        'unless the user used Arabic. No Cyrillic in a Turkish reply. This is absolute — not a single foreign-alphabet character '
+        'in prose text.\n'
         '**Rule #3:** Do NOT switch to the app/UI language, the model’s default locale, or the language of web search / '
-        'RAG snippets. Always translate retrieved content into the user’s language before including it.'
+        'RAG snippets. Always translate retrieved content into the user’s language before including it.\n'
+        '**Rule #4 (depth):** Give a **complete, helpful** answer with enough sentences to address the question. Do **not** '
+        'reply with only one or two words unless the user explicitly asked for yes/no or an ultra-brief reply.'
     )
 
     return (
@@ -464,8 +468,8 @@ def build_output_language_system_instruction(last_user_text: str | None) -> str:
         f'{global_rule}\n'
         f'{body}\n'
         f'- Proper nouns and user-typed spellings must match the user’s message (including language-specific letters).\n'
-        f'- Unless the user explicitly asks for bilingual output, do not mix languages or scripts.\n'
-        f'- Never answer in Turkish when the user wrote in English (or switch languages arbitrarily); match the user’s message language.'
+        f'- Unless the user explicitly asks for bilingual or multilingual output, use exactly one language for all prose.\n'
+        f'- Never answer in a different language than the user’s message (including random language switches mid-answer).'
     )
 
 
@@ -673,25 +677,46 @@ def _sanitize_plain_segment(text: str, last_user_text: str | None) -> str:
 
 def _output_cleanup_enabled() -> bool:
     return (
-        os.environ.get('OUTPUT_TOKEN_SOUP_STRIP', 'true').lower() == 'true'
-        or os.environ.get('OUTPUT_LANGUAGE_SANITIZE', 'true').lower() == 'true'
+        os.environ.get('OUTPUT_TOKEN_SOUP_STRIP', 'false').lower() == 'true'
+        or os.environ.get('OUTPUT_LANGUAGE_SANITIZE', 'false').lower() == 'true'
     )
 
 
 def _clean_plain_segment(text: str, last_user_text: str | None) -> str:
-    """Token-soup strip (optional) + script strip (optional)."""
+    """Token-soup strip (optional) + script strip (optional).
+
+    Length floor applies only to script stripping: removing token-soup blocks can
+    legitimately drop most of the character count; reverting to the pre-strip text would put garbage back (see test_sanitize_strips_token_soup_paragraph).
+    """
     t = text
-    if os.environ.get('OUTPUT_TOKEN_SOUP_STRIP', 'true').lower() == 'true':
+    if os.environ.get('OUTPUT_TOKEN_SOUP_STRIP', 'false').lower() == 'true':
         t = _strip_token_soup_paragraphs(t)
-    if os.environ.get('OUTPUT_LANGUAGE_SANITIZE', 'true').lower() == 'true':
-        t = _sanitize_plain_segment(t, last_user_text)
+    if os.environ.get('OUTPUT_LANGUAGE_SANITIZE', 'false').lower() == 'true':
+        t = _cleanup_respects_length_floor(t, _sanitize_plain_segment(t, last_user_text))
     return t
+
+
+def _cleanup_respects_length_floor(original: str, cleaned: str) -> str:
+    """
+    If script stripping removes most of the answer (common when the model mixes languages),
+    keep the original text so the user still sees a usable reply. Opt-in sanitization can be strict;
+    this avoids two-word fragments.
+    """
+    if not cleaned or not cleaned.strip():
+        return original
+    o, c = original.strip(), cleaned.strip()
+    if len(o) < 24:
+        return cleaned
+    # Dropped more than ~half the characters → likely collateral damage from aggressive stripping
+    if len(c) < max(32, int(len(o) * 0.48)):
+        return original
+    return cleaned
 
 
 def sanitize_leaked_scripts(text: str | None, last_user_text: str | None) -> str | None:
     """
     Remove characters from scripts that contradict the detected reply profile (best-effort).
-    Optionally strips degenerate “token soup” paragraphs (OUTPUT_TOKEN_SOUP_STRIP, default on).
+    Optionally strips degenerate “token soup” paragraphs (OUTPUT_TOKEN_SOUP_STRIP, default off).
     If both OUTPUT_TOKEN_SOUP_STRIP and OUTPUT_LANGUAGE_SANITIZE are false, returns text unchanged.
     Code fences (```) are preserved.
     """

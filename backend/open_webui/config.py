@@ -2017,6 +2017,15 @@ TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE = PersistentConfig(
 )
 
 
+# Comma-separated tool ids merged into each native FC chat when the client does not send `tools`.
+# Default: always attach the bundled `memory` user-storage toolkit. Override with DEFAULT_CHAT_TOOL_IDS="" to disable.
+DEFAULT_CHAT_TOOL_IDS = [
+    t.strip()
+    for t in os.environ.get('DEFAULT_CHAT_TOOL_IDS', 'memory').split(',')
+    if t.strip()
+]
+
+
 DEFAULT_TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE = """Available Tools: {{TOOLS}}
 
 Your task is to choose and return the correct tool(s) from the list of available tools based on the query. Follow these guidelines:
@@ -2969,25 +2978,20 @@ CHUNK_OVERLAP = PersistentConfig(
 )
 
 DEFAULT_RAG_TEMPLATE = """### Task:
-Respond to the user query using the provided context, incorporating inline citations in the format [id] **only when the <source> tag includes an explicit id attribute** (e.g., <source id="1">).
+Answer using the provided context. Use inline citations as [id] **only when** the <source> tag has an explicit id (e.g. <source id="1">).
 
 ### Guidelines:
-- If you don't know the answer, clearly state that.
-- If uncertain, ask the user for clarification.
-- Respond in exactly ONE language: the same as the user's query (e.g. Turkish, English, Russian). Do not mix languages or scripts; do not paste raw non-query-language snippets from context — paraphrase or translate into the reply language.
-- If the context is unreadable or of poor quality, inform the user and provide the best possible answer.
-- If the answer isn't present in the context but you possess the knowledge, explain this to the user and provide the answer using your own understanding.
-- **Only include inline citations using [id] (e.g., [1], [2]) when the <source> tag includes an id attribute.**
-- Do not cite if the <source> tag does not contain an id attribute.
-- Do not use XML tags in your response.
-- Ensure citations are concise and directly related to the information provided.
+- **Grounding:** If the question is about facts that should appear in these sources, base those facts only on the context. If the context does not contain the answer, say so clearly in the user's language—do not invent document content, quotes, or section references.
+- **General knowledge:** If the question is clearly general (not about the documents) and the context is empty or irrelevant, you may answer from general knowledge and briefly note that it was not found in the provided materials.
+- If you don't know, say you don't know; if the context is unreadable, say so.
+- Respond in exactly ONE language: the same as the user's query. Do not mix languages or scripts; paraphrase or translate context into the reply language.
+- **Only cite with [id] when the <source> tag includes an id attribute.** Do not cite without an id. Do not use XML tags in your answer.
 
-### Example of Citation:
-If the user asks about a specific topic and the information is found in a source with a provided id attribute, the response should include the citation like in the following example:
+### Example:
 * "According to the study, the proposed method increases efficiency by 20% [1]."
 
 ### Output:
-Provide a clear and direct response to the user's query, including inline citations in the format [id] only when the <source> tag with id attribute is present in the context.
+Clear, direct answer; citations only when ids exist in context.
 
 <context>
 {{CONTEXT}}

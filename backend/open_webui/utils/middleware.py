@@ -122,6 +122,7 @@ from open_webui.config import (
     CACHE_DIR,
     DEFAULT_VOICE_MODE_PROMPT_TEMPLATE,
     DEFAULT_TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE,
+    DEFAULT_CHAT_TOOL_IDS,
     DEFAULT_CODE_INTERPRETER_PROMPT,
     CODE_INTERPRETER_PYODIDE_PROMPT,
     CODE_INTERPRETER_BLOCKED_MODULES,
@@ -2841,6 +2842,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     # Model "Knowledge" handling
     user_message = get_last_user_message(form_data['messages'])
     model_knowledge = model.get('info', {}).get('meta', {}).get('knowledge', False)
+    form_data['_model_knowledge_rag_started'] = False
 
     if (
         model_knowledge
@@ -2848,42 +2850,53 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         and not form_data.get('_mws_pure_draw_intent')
         and not form_data.get('_mws_export_completion')
     ):
-        await event_emitter(
-            {
-                'type': 'status',
-                'data': {
-                    'action': 'knowledge_search',
-                    'query': user_message,
-                    'done': False,
-                },
-            }
-        )
+        try:
+            from open_webui.utils.knowledge_retrieval_router import should_include_model_knowledge_files
+            from open_webui.utils.mws_gpt.registry import extract_last_user_text
 
-        knowledge_files = []
-        for item in model_knowledge:
-            if item.get('collection_name'):
-                knowledge_files.append(
-                    {
-                        'id': item.get('collection_name'),
-                        'name': item.get('name'),
-                        'legacy': True,
-                    }
-                )
-            elif item.get('collection_names'):
-                knowledge_files.append(
-                    {
-                        'name': item.get('name'),
-                        'type': 'collection',
-                        'collection_names': item.get('collection_names'),
-                        'legacy': True,
-                    }
-                )
-            else:
-                knowledge_files.append(item)
+            _k_user = extract_last_user_text(form_data.get('messages') or []) or user_message
+            _include_kb = should_include_model_knowledge_files(_k_user)
+        except Exception:
+            _include_kb = True
 
-        files = form_data.get('files', [])
-        files.extend(knowledge_files)
-        form_data['files'] = files
+        if _include_kb:
+            await event_emitter(
+                {
+                    'type': 'status',
+                    'data': {
+                        'action': 'knowledge_search',
+                        'query': user_message,
+                        'done': False,
+                    },
+                }
+            )
+            form_data['_model_knowledge_rag_started'] = True
+
+            knowledge_files = []
+            for item in model_knowledge:
+                if item.get('collection_name'):
+                    knowledge_files.append(
+                        {
+                            'id': item.get('collection_name'),
+                            'name': item.get('name'),
+                            'legacy': True,
+                        }
+                    )
+                elif item.get('collection_names'):
+                    knowledge_files.append(
+                        {
+                            'name': item.get('name'),
+                            'type': 'collection',
+                            'collection_names': item.get('collection_names'),
+                            'legacy': True,
+                        }
+                    )
+                else:
+                    knowledge_files.append(item)
+
+            files = form_data.get('files', [])
+            files.extend(knowledge_files)
+            form_data['files'] = files
 
     variables = form_data.pop('variables', None)
 
@@ -3166,6 +3179,16 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     if not payload_tools:
         # Server side tools
         tool_ids = metadata.get('tool_ids', None)
+        tool_ids_list = list(tool_ids) if tool_ids else []
+        if (
+            DEFAULT_CHAT_TOOL_IDS
+            and metadata.get('params', {}).get('function_calling') == 'native'
+        ):
+            for tid in DEFAULT_CHAT_TOOL_IDS:
+                if tid and tid not in tool_ids_list:
+                    tool_ids_list.append(tid)
+        tool_ids = tool_ids_list
+        metadata['tool_ids'] = tool_ids_list
         # Client side tools
         direct_tool_servers = metadata.get('tool_servers', None)
 
@@ -3429,6 +3452,18 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
     if file_context_enabled:
         try:
+            from open_webui.utils.knowledge_retrieval_router import filter_files_for_retrieval
+            from open_webui.utils.mws_gpt.registry import extract_last_user_text
+
+            _rag_user = extract_last_user_text(form_data.get('messages') or []) or get_last_user_message(
+                form_data.get('messages') or []
+            )
+            _meta = form_data.get('metadata') or {}
+            _meta['files'] = filter_files_for_retrieval(_meta.get('files'), _rag_user)
+            form_data['metadata'] = _meta
+        except Exception as e:
+            log.debug('selective RAG file filter: %s', e)
+        try:
             form_data, flags = await chat_completion_files_handler(request, form_data, extra_params, user)
             sources.extend(flags.get('sources', []))
         except Exception as e:
@@ -3467,7 +3502,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     if len(sources) > 0:
         events.append({'sources': sources})
 
-    if model_knowledge:
+    if form_data.get('_model_knowledge_rag_started'):
         await event_emitter(
             {
                 'type': 'status',
@@ -3492,8 +3527,14 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     except Exception:
         pass
 
-    # Tek dil / script kilidi: son kullanıcı mesajına göre (tüm sohbet tamamlamaları)
+    # Routing / adherence hint + reply language lock (all completions)
     if not form_data.get('_mws_export_completion'):
+        try:
+            from open_webui.utils.chat_assistant_hints import inject_chat_route_and_adherence_hint
+
+            form_data['messages'] = inject_chat_route_and_adherence_hint(form_data.get('messages') or [])
+        except Exception as e:
+            log.debug('chat route hint: %s', e)
         try:
             from open_webui.utils.output_language_guard import inject_output_language_lock
 
