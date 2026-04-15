@@ -6,15 +6,99 @@ history — including images, long-term memory injections, RAG context, and cros
 snapshots — plus the first model's draft as an additional assistant message and a
 concise synthesis directive.  This eliminates the context-loss problem where the
 polisher/synthesizer/reviewer had no access to prior turns.
+
+Context-window guard: before every completion call the message list is trimmed so the
+estimated token count stays below the model's advertised context length (or a
+conservative default).  This prevents "prompt too long" errors that previously broke
+Deep Thinking on smaller-context models (e.g. 16 K).
 """
 
 from __future__ import annotations
 
 import copy
 import logging
+import os
 from typing import Any
 
 log = logging.getLogger(__name__)
+
+_CHARS_PER_TOKEN_ESTIMATE = 3.5
+_DEFAULT_MODEL_CTX = 16_384
+_CTX_USAGE_RATIO = 0.85
+
+_MODEL_CTX_OVERRIDES: dict[str, int] = {
+    'qwen2.5-vl-72b': 16_384,
+    'qwen2.5-72b-instruct': 32_768,
+    'llama-3.3-70b-instruct': 131_072,
+    'deepseek-r1-distill-qwen-32b': 32_768,
+    'QwQ-32B': 32_768,
+    'qwen3-32b': 32_768,
+    'gpt-oss-120b': 32_768,
+    'gpt-oss-20b': 16_384,
+    'gemma-3-27b-it': 8_192,
+}
+
+
+def _estimate_tokens(text: str) -> int:
+    return max(1, int(len(text) / _CHARS_PER_TOKEN_ESTIMATE))
+
+
+def _estimate_messages_tokens(messages: list[dict]) -> int:
+    total = 0
+    for m in messages:
+        c = m.get('content', '')
+        if isinstance(c, str):
+            total += _estimate_tokens(c) + 4
+        elif isinstance(c, list):
+            for part in c:
+                if isinstance(part, dict):
+                    total += _estimate_tokens(part.get('text', ''))
+                    if part.get('type') == 'image_url':
+                        total += 1000
+            total += 4
+        else:
+            total += 4
+    return total
+
+
+def _get_model_ctx(model_id: str) -> int:
+    env_val = os.environ.get('MWS_MODEL_CTX_OVERRIDE', '').strip()
+    if env_val:
+        try:
+            return int(env_val)
+        except ValueError:
+            pass
+    return _MODEL_CTX_OVERRIDES.get(model_id or '', _DEFAULT_MODEL_CTX)
+
+
+def trim_messages_to_fit(
+    messages: list[dict],
+    model_id: str,
+    reserve_tokens: int = 0,
+) -> list[dict]:
+    """Drop oldest non-system messages until estimated tokens fit the model context."""
+    ctx = _get_model_ctx(model_id)
+    budget = int(ctx * _CTX_USAGE_RATIO) - reserve_tokens
+    if budget < 2048:
+        budget = 2048
+
+    est = _estimate_messages_tokens(messages)
+    if est <= budget:
+        return messages
+
+    out = list(messages)
+    system_msgs = [m for m in out if m.get('role') == 'system']
+    non_system = [m for m in out if m.get('role') != 'system']
+
+    while _estimate_messages_tokens(system_msgs + non_system) > budget and len(non_system) > 2:
+        non_system.pop(0)
+
+    trimmed = system_msgs + non_system
+    log.info(
+        '[MWS] trimmed messages from ~%d to ~%d tokens (model=%s, ctx=%d)',
+        est, _estimate_messages_tokens(trimmed), model_id, ctx,
+    )
+    return trimmed
 
 _SYNTHESIS_ROLE_NOTE = (
     'An earlier AI model produced the draft answer above. '
@@ -113,9 +197,10 @@ async def apply_mws_auto_workflow_preflight(
         current_messages = form_data.get('messages') or []
 
         async def _run_block(mid: str, msgs: list) -> str:
+            trimmed = trim_messages_to_fit(msgs, mid, reserve_tokens=1024)
             inner: dict[str, Any] = {
                 'model': mid,
-                'messages': msgs,
+                'messages': trimmed,
                 'stream': False,
                 'metadata': metadata,
             }
@@ -137,9 +222,10 @@ async def apply_mws_auto_workflow_preflight(
                     'The assistant message above is a visual analysis by a vision model. '
                     'Synthesize it with the full conversation into one coherent answer.'
                 )
-                form_data['messages'] = _append_preflight_context(
+                preflight_msgs = _append_preflight_context(
                     current_messages, vision_out, AUTO_FINAL_SYNTHESIS_SYSTEM, extra,
                 )
+                form_data['messages'] = trim_messages_to_fit(preflight_msgs, sid)
                 form_data['model'] = sid
                 form_data['_mws_auto_preflight_done'] = True
                 model = request.app.state.MODELS.get(sid) or model
@@ -172,9 +258,10 @@ async def apply_mws_auto_workflow_preflight(
                         'Be precise, well-structured, and complete. Remove redundancy.'
                     )
 
-                form_data['messages'] = _append_preflight_context(
+                preflight_msgs = _append_preflight_context(
                     current_messages, draft, AUTO_FINAL_SYNTHESIS_SYSTEM, extra,
                 )
+                form_data['messages'] = trim_messages_to_fit(preflight_msgs, pid)
                 form_data['model'] = pid
                 form_data['_mws_auto_preflight_done'] = True
                 model = request.app.state.MODELS.get(pid) or model
@@ -198,9 +285,10 @@ async def apply_mws_auto_workflow_preflight(
                     'The assistant message above is a code draft. '
                     'If code was requested, output clean final code with brief explanation only if needed.'
                 )
-                form_data['messages'] = _append_preflight_context(
+                preflight_msgs = _append_preflight_context(
                     current_messages, draft, AUTO_FINAL_SYNTHESIS_SYSTEM, extra,
                 )
+                form_data['messages'] = trim_messages_to_fit(preflight_msgs, rid)
                 form_data['model'] = rid
                 form_data['_mws_auto_preflight_done'] = True
                 model = request.app.state.MODELS.get(rid) or model

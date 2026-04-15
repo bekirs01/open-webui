@@ -3546,6 +3546,15 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     # to prevent template parsing errors with strict chat templates (e.g. Qwen)
     form_data['messages'] = merge_system_messages(form_data.get('messages', []))
 
+    # Context-window guard: trim old messages so the prompt fits the target model.
+    try:
+        from open_webui.utils.mws_gpt.workflow_runner import trim_messages_to_fit
+
+        model_id = form_data.get('model', '')
+        form_data['messages'] = trim_messages_to_fit(form_data['messages'], model_id)
+    except Exception as e:
+        log.debug('[MWS] context trim: %s', e)
+
     return form_data, metadata, events
 
 

@@ -3,20 +3,20 @@
   ------------------
   Terminal 1:  npm run collab
   Terminal 2:  npm run dev
-  Both users open http://localhost:1000 in separate tabs.
+  Both users open http://localhost:4000 in separate tabs.
   One creates a room, shares the roomId with the other via any channel.
 
   HOW TO RUN — PRODUCTION
   -----------------------
   Deploy this file to any Node.js host (Railway, Fly.io, Render, VPS…).
-  Set env var:  COLLAB_PORT=4000  (or whatever the host assigns)
+  Set env var:  COLLAB_PORT=4010  (default; backend uses 4000 — avoid clash)
   In your SvelteKit .env:  PUBLIC_COLLAB_WS_URL=wss://your-domain.com
   No other code changes needed.
 */
 
 import { WebSocketServer } from 'ws';
 
-const port = Number(process.env.COLLAB_PORT ?? 4000);
+const port = Number(process.env.COLLAB_PORT ?? 4010);
 /** @type {Map<string, Set<import('ws').WebSocket>>} */
 const rooms = new Map();
 

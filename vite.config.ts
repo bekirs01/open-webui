@@ -3,7 +3,7 @@ import { defineConfig } from 'vite';
 
 import { viteStaticCopy } from 'vite-plugin-static-copy';
 
-const BACKEND_URL = process.env.PUBLIC_WEBUI_BACKEND_URL?.trim().replace(/\/$/, '') || 'http://127.0.0.1:9090';
+const BACKEND_URL = process.env.PUBLIC_WEBUI_BACKEND_URL?.trim().replace(/\/$/, '') || 'http://127.0.0.1:2000';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function sseProxy(ws = false): Record<string, any> {
@@ -64,6 +64,8 @@ export default defineConfig({
 			'/images': sseProxy(false),
 			'/audio': sseProxy(false),
 			'/retrieval': sseProxy(false),
+			// OAuth girişleri backend'de; aynı origin (Vite) üzerinden proxy
+			'/oauth': { target: BACKEND_URL, changeOrigin: true },
 			'/ws/socket.io': sseProxy(true),
 			'/socket.io': sseProxy(true),
 			'/static': { target: BACKEND_URL, changeOrigin: true }

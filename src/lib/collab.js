@@ -1,6 +1,6 @@
 /**
  * Shared room WebSocket client. Safe no-op when not connected.
- * URL: import.meta.env.PUBLIC_COLLAB_WS_URL or ws://localhost:4000
+ * URL: import.meta.env.PUBLIC_COLLAB_WS_URL or ws://localhost:4010 (collab; backend API is :4000)
  */
 
 import { writable } from 'svelte/store';
@@ -32,7 +32,7 @@ export function getCollabSenderId() {
 export function getCollabWsUrl() {
 	const fromEnv = import.meta.env.PUBLIC_COLLAB_WS_URL;
 	if (fromEnv && String(fromEnv).trim()) return String(fromEnv).trim();
-	return 'ws://localhost:4000';
+	return 'ws://localhost:4010';
 }
 
 let ws = null;

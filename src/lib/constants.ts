@@ -5,13 +5,17 @@ import { env } from '$env/dynamic/public';
 export const APP_NAME = 'Open WebUI';
 
 /**
- * Geliştirmede Vite proxy kullanılıyor (vite.config.ts → server.proxy).
- * Tüm /api, /ollama, /socket.io vb. istekler aynı origin üzerinden backend'e gider.
- * Proxy olmadan doğrudan backend'e bağlanmak için kök .env: PUBLIC_WEBUI_BACKEND_URL=http://127.0.0.1:9090
+ * Geliştirmede tarayıcıda API tabanı her zaman boş (aynı origin = Vite, örn. :4000).
+ * İstekler /api, /ollama, /oauth vb. ile gider; vite.config.ts bunları PUBLIC_WEBUI_BACKEND_URL
+ * (varsayılan http://127.0.0.1:2000) adresine proxy eder — tek uygulama gibi çalışır, CORS gerekmez.
+ * Doğrudan backend'e istemci üzerinden bağlanmak (nadir): PUBLIC_WEBUI_DEV_DIRECT_BACKEND=true
+ * ve .env'de PUBLIC_WEBUI_BACKEND_URL ayarlayın.
  */
 function devBackendBaseUrl(): string {
-	const override = env.PUBLIC_WEBUI_BACKEND_URL?.trim().replace(/\/$/, '');
-	if (override) return override;
+	if ((env.PUBLIC_WEBUI_DEV_DIRECT_BACKEND || '').toLowerCase() === 'true') {
+		const override = env.PUBLIC_WEBUI_BACKEND_URL?.trim().replace(/\/$/, '');
+		if (override) return override;
+	}
 	return '';
 }
 
